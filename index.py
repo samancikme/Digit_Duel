@@ -1,278 +1,537 @@
+"""
+🎮 BULLS & COWS - KREATIV VERSIYA
+================================
+Aiogram 3.x bilan yozilgan professional o'yin boti
+
+Yangi xususiyatlar:
+- 🤖 Bot bilan o'ynash (AI)
+- 🏆 Rating va Leaderboard
+- 📊 Statistika
+- ⏱️ Vaqt cheklovi
+- 💡 Hint (maslahat) tizimi
+- 🎯 Turli qiyinlik darajalari
+- 🔥 Streak (ketma-ket g'alabalar)
+- 🎁 Daily bonus
+- 🏅 Achievements
+- 💰 Coin tizimi
+"""
+
+import asyncio
 import logging
+import random
+import json
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
 import os
-from typing import Optional, Tuple, Dict, Any
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    CallbackContext,
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardButton, 
+    InlineKeyboardMarkup, User
 )
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LOGGING SOZLAMALARI
+# CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# GLOBAL O'ZGARUVCHILAR
-# ═══════════════════════════════════════════════════════════════════════════════
-user_data: Dict[int, Dict[str, Any]] = {}
-games: Dict[str, Dict[str, Any]] = {}
-pending_send: Dict[int, str] = {}
-game_counter: int = 0
+TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+CHANNEL_USERNAME = "@samancikschannel"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# O'YIN HOLATLARI
+# ENUMS & CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════════
-WAITING_FOR_PLAYERS = "WAITING_FOR_PLAYERS"
-WAITING_FOR_SECRET = "WAITING_FOR_SECRET"
-PLAYING = "PLAYING"
-FINISHED = "FINISHED"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TILLAR
-# ═══════════════════════════════════════════════════════════════════════════════
+class GameMode(Enum):
+    VS_PLAYER = "vs_player"
+    VS_BOT = "vs_bot"
+
+class Difficulty(Enum):
+    EASY = 3      # 3 xonali
+    MEDIUM = 4    # 4 xonali
+    HARD = 5      # 5 xonali
+    EXTREME = 6   # 6 xonali
+
+class Achievement(Enum):
+    FIRST_WIN = ("first_win", "🏆 Birinchi g'alaba", 100)
+    SPEED_DEMON = ("speed_demon", "⚡ 3 urinishda g'alaba", 200)
+    STREAK_3 = ("streak_3", "🔥 3 ketma-ket g'alaba", 150)
+    STREAK_5 = ("streak_5", "🔥🔥 5 ketma-ket g'alaba", 300)
+    STREAK_10 = ("streak_10", "🔥🔥🔥 10 ketma-ket g'alaba", 500)
+    BOT_SLAYER = ("bot_slayer", "🤖 Botni yengish", 100)
+    HARD_MODE = ("hard_mode", "💪 Hard rejimda g'alaba", 250)
+    PLAYED_100 = ("played_100", "🎮 100 o'yin", 500)
+    MASTER = ("master", "👑 Rating 2000+", 1000)
+
 LANGUAGES = {
-    "uz": "O'zbek",
-    "ru": "Русский",
-    "en": "English",
-    "kk": "Qaraqalpaq"
+    "uz": "🇺🇿 O'zbek",
+    "ru": "🇷🇺 Русский",
+    "en": "🇺🇸 English"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# XABARLAR
+# DATA CLASSES
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class PlayerStats:
+    user_id: int
+    username: str = ""
+    first_name: str = ""
+    language: str = "uz"
+    coins: int = 100
+    rating: int = 1000
+    games_played: int = 0
+    games_won: int = 0
+    current_streak: int = 0
+    best_streak: int = 0
+    total_attempts: int = 0
+    hints_used: int = 0
+    achievements: List[str] = field(default_factory=list)
+    last_daily: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    
+    @property
+    def win_rate(self) -> float:
+        if self.games_played == 0:
+            return 0.0
+        return (self.games_won / self.games_played) * 100
+    
+    @property
+    def avg_attempts(self) -> float:
+        if self.games_won == 0:
+            return 0.0
+        return self.total_attempts / self.games_won
+
+@dataclass
+class Game:
+    game_id: str
+    mode: GameMode
+    difficulty: Difficulty
+    player1_id: int
+    player2_id: Optional[int] = None
+    secret1: Optional[str] = None
+    secret2: Optional[str] = None
+    turn: Optional[int] = None
+    attempts: Dict[int, int] = field(default_factory=dict)
+    hints_used: Dict[int, int] = field(default_factory=dict)
+    history: List[Dict] = field(default_factory=list)
+    started_at: Optional[str] = None
+    time_limit: int = 60  # soniya
+    last_move: Optional[str] = None
+    is_finished: bool = False
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class GameStates(StatesGroup):
+    choosing_language = State()
+    main_menu = State()
+    choosing_mode = State()
+    choosing_difficulty = State()
+    waiting_for_opponent = State()
+    entering_secret = State()
+    playing = State()
+    sending_message = State()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATABASE (In-Memory - Production uchun Redis/PostgreSQL ishlatish kerak)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Database:
+    def __init__(self):
+        self.players: Dict[int, PlayerStats] = {}
+        self.games: Dict[str, Game] = {}
+        self.pending_games: Dict[str, Game] = {}
+        self.game_counter: int = 0
+    
+    def get_player(self, user_id: int) -> Optional[PlayerStats]:
+        return self.players.get(user_id)
+    
+    def create_player(self, user: User) -> PlayerStats:
+        player = PlayerStats(
+            user_id=user.id,
+            username=user.username or "",
+            first_name=user.first_name or "Player"
+        )
+        self.players[user.id] = player
+        return player
+    
+    def get_or_create_player(self, user: User) -> PlayerStats:
+        player = self.get_player(user.id)
+        if not player:
+            player = self.create_player(user)
+        return player
+    
+    def save_player(self, player: PlayerStats) -> None:
+        self.players[player.user_id] = player
+    
+    def create_game(self, player1_id: int, mode: GameMode, difficulty: Difficulty) -> Game:
+        self.game_counter += 1
+        game = Game(
+            game_id=str(self.game_counter),
+            mode=mode,
+            difficulty=difficulty,
+            player1_id=player1_id,
+            attempts={player1_id: 0},
+            hints_used={player1_id: 0}
+        )
+        if mode == GameMode.VS_PLAYER:
+            self.pending_games[game.game_id] = game
+        else:
+            self.games[game.game_id] = game
+        return game
+    
+    def get_game(self, game_id: str) -> Optional[Game]:
+        return self.games.get(game_id) or self.pending_games.get(game_id)
+    
+    def get_active_game(self, user_id: int) -> Optional[Game]:
+        for game in list(self.games.values()) + list(self.pending_games.values()):
+            if not game.is_finished:
+                if game.player1_id == user_id or game.player2_id == user_id:
+                    return game
+        return None
+    
+    def get_leaderboard(self, limit: int = 10) -> List[PlayerStats]:
+        sorted_players = sorted(
+            self.players.values(),
+            key=lambda p: p.rating,
+            reverse=True
+        )
+        return sorted_players[:limit]
+    
+    def cleanup_finished_games(self) -> None:
+        finished = [gid for gid, g in self.games.items() if g.is_finished]
+        for gid in finished:
+            del self.games[gid]
+
+db = Database()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
 MESSAGES = {
     "uz": {
-        "choose_language": "Tilni tanlang:",
-        "subscribe": "Botdan foydalanish uchun kanalga a'zo bo'ling: [Kanal](https://t.me/samancikschannel)",
-        "lang_confirmed": "Siz {lang} tilini tanladingiz!",
-        "not_subscribed": "Iltimos, kanalga a'zo bo'ling❗️",
-        "subscription_confirmed": "Muvaffaqiyatli a'zo bo'ldingiz! Asosiy menyuga o'ting.",
-        "main_menu": "Asosiy menyu:",
-        "game_created": "Yangi o'yin yaratildi! Do'stingizga ushbu havolani yuboring:\n{invite_link}",
-        "game_start_info": "O'yin boshlandi! Sizning raqibingiz: {opponent}.\nIltimos, 4 xonali maxfiy raqamingizni kiriting (raqamlar takrorlanmasin).",
-        "prompt_secret": "Iltimos, 4 xonali maxfiy raqamingizni kiriting.",
-        "secret_set": "Maxfiy raqamingiz saqlandi. Raqibingiz ham kiritishini kuting.",
-        "your_turn": "Endi sizning navbatingiz. Taxminingizni yuboring.",
-        "opponent_turn": "Endi raqibingizning navbati. Kuting...",
-        "invalid_input": "❌ Iltimos, 4 xonali son kiriting (raqamlar takrorlanmasin).",
-        "bulls_cows": "🎯 {bulls} Bull, {cows} Cow.\nNavbatingiz kelganda yana urinib ko'ring.",
-        "win": "🥳 Tabriklaymiz! Siz {attempts} urinishda g'olib bo'ldingiz!\nRaqibingizning maxfiy raqami: {secret}",
-        "lost": "😔 Afsuski, siz mag'lub bo'ldingiz.\nRaqibingizning maxfiy raqami: {secret}",
-        "surrendered_self": "Siz taslim bo'ldingiz. Siz yutqazdingiz.",
-        "surrendered_opponent": "Sizning raqibingiz taslim bo'ldi. Siz yutdingiz! 🎉",
-        "game_cancelled": "O'yin bekor qilindi.",
-        "not_your_turn": "Sizning navbatingiz emas❗️",
-        "new_game_button": "🎮 Yangi o'yin",
-        "settings_button": "⚙️ Sozlamalar",
-        "subscribe_button": "✅ A'zo bo'ldim",
-        "finish_game_button": "🏳️ Taslim bo'lish",
-        "send_message_button": "✉️ Xabar yuborish",
-        "cancel_send_button": "❌ Bekor qilish",
-        "game_rules_button": "📜 O'yin qoidalari",
-        "surrender_confirm": "Haqiqatan ham taslim bo'lmoqchimisiz?",
-        "yes_button": "Ha",
-        "no_button": "Yo'q",
-        "game_rules": "📜 O'yin qoidalari:\n\nBulls & Cows o'yinida har bir o'yinchi 4 xonali maxfiy raqam tanlaydi.\n\n🎯 Bull - raqam to'g'ri va joyi to'g'ri\n🐄 Cow - raqam to'g'ri, lekin joyi noto'g'ri\n\nG'olib - raqibning maxfiy raqamini birinchi topgan o'yinchi!",
-        "game_not_found": "Faol o'yin topilmadi.",
-        "already_in_game": "Siz allaqachon faol o'yinda ishtirok etmoqdasiz!",
-        "game_already_started": "Bu o'yin allaqachon boshlangan!",
-        "cannot_play_self": "O'zingiz bilan o'ynay olmaysiz!",
-        "secret_already_set": "Siz allaqachon maxfiy raqamingizni kiritgansiz.",
-        "message_sent": "Xabar yuborildi ✅",
-        "write_message": "Yubormoqchi bo'lgan xabaringizni yozing:",
-        "message_from": "💬 {name} dan xabar: {text}",
-        "send_cancelled": "Xabar yuborish bekor qilindi.",
-        "play_again": "Yana o'ynash uchun /start bosing",
-        "waiting_opponent": "Raqibingiz kutilmoqda...",
-        "back_button": "🔙 Orqaga"
+        "welcome": """
+🎮 <b>BULLS & COWS</b> o'yiniga xush kelibsiz!
+
+Raqamlarni topish o'yini - raqibingizning maxfiy raqamini birinchi toping!
+
+🎯 <b>Bull</b> - to'g'ri raqam, to'g'ri joy
+🐄 <b>Cow</b> - to'g'ri raqam, noto'g'ri joy
+""",
+        "choose_language": "🌍 Tilni tanlang:",
+        "subscribe": "📢 Botdan foydalanish uchun kanalga a'zo bo'ling:",
+        "subscribe_button": "📢 Kanalga o'tish",
+        "check_sub": "✅ Tekshirish",
+        "not_subscribed": "❌ Siz hali kanalga a'zo emassiz!",
+        "main_menu": """
+🏠 <b>Asosiy Menyu</b>
+
+💰 Balans: <b>{coins}</b> coin
+🏆 Rating: <b>{rating}</b>
+🔥 Streak: <b>{streak}</b>
+📊 G'alabalar: <b>{wins}/{games}</b> ({win_rate:.1f}%)
+""",
+        "choose_mode": """
+🎮 <b>O'yin turini tanlang:</b>
+
+🤖 Bot bilan - sun'iy intellekt bilan
+👥 Do'st bilan - havolani ulashing
+""",
+        "choose_difficulty": """
+📊 <b>Qiyinlik darajasini tanlang:</b>
+
+🟢 Oson - 3 xonali raqam
+🟡 O'rtacha - 4 xonali raqam  
+🔴 Qiyin - 5 xonali raqam
+⚫ Ekstremal - 6 xonali raqam
+""",
+        "game_created": """
+✅ <b>O'yin yaratildi!</b>
+
+🔗 Do'stingizga bu havolani yuboring:
+{invite_link}
+
+⏳ Raqib kutilmoqda...
+""",
+        "game_started": """
+🎮 <b>O'yin boshlandi!</b>
+
+👤 Raqib: <b>{opponent}</b>
+📊 Qiyinlik: <b>{difficulty}</b> xonali
+
+🔢 Maxfiy raqamingizni kiriting (raqamlar takrorlanmasin):
+""",
+        "secret_set": "✅ Maxfiy raqamingiz saqlandi! Raqibingizni kuting...",
+        "your_turn": """
+🎯 <b>Sizning navbatingiz!</b>
+
+⏱️ Vaqt: {time} soniya
+💡 Hint: {hints} ta qoldi
+
+Taxminingizni yuboring:
+""",
+        "opponent_turn": "⏳ Raqibingizning navbati. Kuting...",
+        "result": """
+📊 <b>Natija:</b> {guess}
+
+🎯 {bulls} Bull | 🐄 {cows} Cow
+
+📝 Urinishlar: {attempts}
+""",
+        "win": """
+🎉🎉🎉 <b>TABRIKLAYMIZ!</b> 🎉🎉🎉
+
+Siz <b>{attempts}</b> urinishda g'olib bo'ldingiz!
+
+🎯 Raqibning maxfiy raqami: <code>{secret}</code>
+
+💰 +{coins} coin
+🏆 +{rating} rating
+{streak_bonus}
+{achievements}
+""",
+        "lose": """
+😔 <b>Afsuski, siz yutqazdingiz!</b>
+
+🎯 Raqibning maxfiy raqami: <code>{secret}</code>
+
+🏆 -{rating} rating
+""",
+        "hint_used": """
+💡 <b>Maslahat:</b>
+
+{position}-pozitsiyadagi raqam: <b>{digit}</b>
+
+💰 -{cost} coin
+💡 Qolgan hintlar: {remaining}
+""",
+        "not_enough_coins": "❌ Sizda yetarli coin yo'q! (Kerak: {cost})",
+        "no_hints_left": "❌ Hintlar tugadi!",
+        "invalid_input": "❌ Noto'g'ri format! {digits} xonali raqam kiriting (takrorlanmasin).",
+        "not_your_turn": "❌ Sizning navbatingiz emas!",
+        "surrender_confirm": "🏳️ Taslim bo'lishni tasdiqlaysizmi?",
+        "surrendered": "🏳️ Siz taslim bo'ldingiz.",
+        "opponent_surrendered": "🎉 Raqibingiz taslim bo'ldi! Siz yutdingiz!",
+        "game_cancelled": "❌ O'yin bekor qilindi.",
+        "leaderboard": """
+🏆 <b>TOP O'YINCHILAR</b>
+
+{players}
+""",
+        "stats": """
+📊 <b>Sizning statistikangiz</b>
+
+🎮 O'yinlar: {games}
+🏆 G'alabalar: {wins} ({win_rate:.1f}%)
+🔥 Eng uzun streak: {best_streak}
+📈 O'rtacha urinish: {avg_attempts:.1f}
+💡 Ishlatilgan hintlar: {hints}
+🏅 Yutuqlar: {achievements}
+""",
+        "daily_bonus": """
+🎁 <b>Kunlik bonus!</b>
+
+💰 +{coins} coin oldingiz!
+🔥 Streak: {streak} kun
+""",
+        "daily_claimed": "❌ Siz bugun bonusni oldingiz. Ertaga qaytib keling!",
+        "new_achievement": """
+🏅 <b>YANGI YUTUQ!</b>
+
+{name}
+💰 +{coins} coin
+""",
+        "profile": """
+👤 <b>{name}</b>
+
+🆔 ID: <code>{user_id}</code>
+🏆 Rating: {rating}
+💰 Coin: {coins}
+🔥 Streak: {streak}
+
+📊 O'yinlar: {games} | G'alabalar: {wins}
+📈 G'alaba foizi: {win_rate:.1f}%
+
+🏅 Yutuqlar: {achievement_count}/{total_achievements}
+""",
+        "shop": """
+🛒 <b>DO'KON</b>
+
+💰 Sizning balansingiz: {coins} coin
+
+Mavjud mahsulotlar:
+""",
+        "buttons": {
+            "new_game": "🎮 Yangi o'yin",
+            "vs_bot": "🤖 Bot bilan",
+            "vs_player": "👥 Do'st bilan",
+            "leaderboard": "🏆 Reytinglar",
+            "profile": "👤 Profil",
+            "stats": "📊 Statistika",
+            "settings": "⚙️ Sozlamalar",
+            "shop": "🛒 Do'kon",
+            "daily": "🎁 Kunlik bonus",
+            "hint": "💡 Hint ({cost} coin)",
+            "surrender": "🏳️ Taslim",
+            "message": "✉️ Xabar",
+            "back": "🔙 Orqaga",
+            "yes": "✅ Ha",
+            "no": "❌ Yo'q",
+            "easy": "🟢 Oson (3)",
+            "medium": "🟡 O'rtacha (4)",
+            "hard": "🔴 Qiyin (5)",
+            "extreme": "⚫ Ekstremal (6)",
+            "cancel": "❌ Bekor qilish"
+        }
     },
     "ru": {
-        "choose_language": "Выберите язык:",
-        "subscribe": "Пожалуйста, подпишитесь на канал: [Канал](https://t.me/samancikschannel)",
-        "lang_confirmed": "Вы выбрали {lang}!",
-        "not_subscribed": "Пожалуйста, подпишитесь на канал❗️",
-        "subscription_confirmed": "Вы успешно подписались! Переход в главное меню.",
-        "main_menu": "Главное меню:",
-        "game_created": "Новая игра создана! Пригласите друга по ссылке:\n{invite_link}",
-        "game_start_info": "Игра началась! Ваш противник: {opponent}.\nПожалуйста, введите ваше 4-значное секретное число (цифры не должны повторяться).",
-        "prompt_secret": "Пожалуйста, введите ваше 4-значное секретное число.",
-        "secret_set": "Ваше секретное число сохранено. Ожидайте противника.",
-        "your_turn": "Теперь ваша очередь. Отправьте ваш прогноз.",
-        "opponent_turn": "Сейчас очередь противника. Ожидайте...",
-        "invalid_input": "❌ Пожалуйста, введите 4-значное число (цифры не должны повторяться).",
-        "bulls_cows": "🎯 {bulls} Bull, {cows} Cow.\nПопробуйте еще раз, когда придет ваша очередь.",
-        "win": "🥳 Поздравляем! Вы выиграли за {attempts} попыток!\nСекрет соперника: {secret}",
-        "lost": "😔 К сожалению, вы проиграли.\nСекретный номер противника: {secret}",
-        "surrendered_self": "Вы сдались. Вы проиграли.",
-        "surrendered_opponent": "Ваш противник сдался. Вы выиграли! 🎉",
-        "game_cancelled": "Игра отменена.",
-        "not_your_turn": "Сейчас не ваша очередь❗️",
-        "new_game_button": "🎮 Новая игра",
-        "settings_button": "⚙️ Настройки",
-        "subscribe_button": "✅ Подписался",
-        "finish_game_button": "🏳️ Сдаться",
-        "send_message_button": "✉️ Отправить сообщение",
-        "cancel_send_button": "❌ Отмена",
-        "game_rules_button": "📜 Правила игры",
-        "surrender_confirm": "Вы уверены, что хотите сдаться?",
-        "yes_button": "Да",
-        "no_button": "Нет",
-        "game_rules": "📜 Правила игры:\n\nВ игре Bulls & Cows каждый игрок выбирает 4-значное секретное число.\n\n🎯 Bull - цифра верна и на своём месте\n🐄 Cow - цифра верна, но не на своём месте\n\nПобедитель - тот, кто первым угадает секрет противника!",
-        "game_not_found": "Активная игра не найдена.",
-        "already_in_game": "Вы уже участвуете в активной игре!",
-        "game_already_started": "Эта игра уже началась!",
-        "cannot_play_self": "Нельзя играть с самим собой!",
-        "secret_already_set": "Вы уже ввели секретное число.",
-        "message_sent": "Сообщение отправлено ✅",
-        "write_message": "Напишите сообщение для отправки:",
-        "message_from": "💬 Сообщение от {name}: {text}",
-        "send_cancelled": "Отправка сообщения отменена.",
-        "play_again": "Нажмите /start чтобы играть снова",
-        "waiting_opponent": "Ожидание противника...",
-        "back_button": "🔙 Назад"
+        "welcome": """
+🎮 Добро пожаловать в <b>BULLS & COWS</b>!
+
+Игра в угадывание чисел - первым отгадайте секрет противника!
+
+🎯 <b>Bull</b> - правильная цифра на правильном месте
+🐄 <b>Cow</b> - правильная цифра на неправильном месте
+""",
+        "choose_language": "🌍 Выберите язык:",
+        "subscribe": "📢 Подпишитесь на канал:",
+        "subscribe_button": "📢 Перейти на канал",
+        "check_sub": "✅ Проверить",
+        "not_subscribed": "❌ Вы еще не подписаны!",
+        "main_menu": """
+🏠 <b>Главное меню</b>
+
+💰 Баланс: <b>{coins}</b> монет
+🏆 Рейтинг: <b>{rating}</b>
+🔥 Серия: <b>{streak}</b>
+📊 Победы: <b>{wins}/{games}</b> ({win_rate:.1f}%)
+""",
+        "buttons": {
+            "new_game": "🎮 Новая игра",
+            "vs_bot": "🤖 Против бота",
+            "vs_player": "👥 С другом",
+            "leaderboard": "🏆 Рейтинг",
+            "profile": "👤 Профиль",
+            "stats": "📊 Статистика",
+            "settings": "⚙️ Настройки",
+            "shop": "🛒 Магазин",
+            "daily": "🎁 Ежедневный бонус",
+            "hint": "💡 Подсказка ({cost} монет)",
+            "surrender": "🏳️ Сдаться",
+            "message": "✉️ Сообщение",
+            "back": "🔙 Назад",
+            "yes": "✅ Да",
+            "no": "❌ Нет",
+            "easy": "🟢 Легко (3)",
+            "medium": "🟡 Средне (4)",
+            "hard": "🔴 Сложно (5)",
+            "extreme": "⚫ Экстрим (6)",
+            "cancel": "❌ Отмена"
+        }
     },
     "en": {
-        "choose_language": "Choose a language:",
-        "subscribe": "Please join the channel: [Channel](https://t.me/samancikschannel)",
-        "lang_confirmed": "You have selected {lang}!",
-        "not_subscribed": "Please join the channel❗️",
-        "subscription_confirmed": "Subscription confirmed! Proceeding to main menu.",
-        "main_menu": "Main Menu:",
-        "game_created": "New game created! Invite your friend using this link:\n{invite_link}",
-        "game_start_info": "Game started! Your opponent is {opponent}.\nPlease enter your 4-digit secret number (no repeating digits).",
-        "prompt_secret": "Please enter your 4-digit secret number.",
-        "secret_set": "Your secret number has been saved. Waiting for opponent.",
-        "your_turn": "It's your turn now. Please enter your guess.",
-        "opponent_turn": "It's your opponent's turn. Please wait...",
-        "invalid_input": "❌ Please enter a 4-digit number (no repeating digits).",
-        "bulls_cows": "🎯 {bulls} Bull, {cows} Cow.\nTry again when it's your turn.",
-        "win": "🥳 Congratulations! You won in {attempts} attempts!\nOpponent's secret: {secret}",
-        "lost": "😔 Unfortunately, you lost.\nOpponent's secret number: {secret}",
-        "surrendered_self": "You surrendered. You lost.",
-        "surrendered_opponent": "Your opponent surrendered. You win! 🎉",
-        "game_cancelled": "Game cancelled.",
-        "not_your_turn": "It's not your turn❗️",
-        "new_game_button": "🎮 New Game",
-        "settings_button": "⚙️ Settings",
-        "subscribe_button": "✅ Subscribed",
-        "finish_game_button": "🏳️ Surrender",
-        "send_message_button": "✉️ Send Message",
-        "cancel_send_button": "❌ Cancel",
-        "game_rules_button": "📜 Game Rules",
-        "surrender_confirm": "Are you sure you want to surrender?",
-        "yes_button": "Yes",
-        "no_button": "No",
-        "game_rules": "📜 Game Rules:\n\nIn Bulls & Cows, each player chooses a 4-digit secret number.\n\n🎯 Bull - correct digit in correct position\n🐄 Cow - correct digit in wrong position\n\nThe winner is the first to guess the opponent's secret!",
-        "game_not_found": "No active game found.",
-        "already_in_game": "You are already in an active game!",
-        "game_already_started": "This game has already started!",
-        "cannot_play_self": "You cannot play against yourself!",
-        "secret_already_set": "You have already entered your secret number.",
-        "message_sent": "Message sent ✅",
-        "write_message": "Write your message to send:",
-        "message_from": "💬 Message from {name}: {text}",
-        "send_cancelled": "Message sending cancelled.",
-        "play_again": "Press /start to play again",
-        "waiting_opponent": "Waiting for opponent...",
-        "back_button": "🔙 Back"
-    },
-    "kk": {
-        "choose_language": "Tildi saylań:",
-        "subscribe": "Ótinish, kanalǵa jazılıń: [Kanal](https://t.me/samancikschannel)",
-        "lang_confirmed": "Siz {lang} tańladıńız!",
-        "not_subscribed": "Ótinish, kanalǵa jazılıń❗️",
-        "subscription_confirmed": "Siz tabıslı jazıldıńız!",
-        "main_menu": "Bas menyu:",
-        "game_created": "Jańa oyın jaratıldı! Dosıńızdı shaqırıń:\n{invite_link}",
-        "game_start_info": "Oyın baslandı! Qarsılasıńız: {opponent}.\n4 sanli jasırın nomerińizdi kiritiń.",
-        "prompt_secret": "4 sanli jasırın nomerińizdi kiritiń.",
-        "secret_set": "Jasırın nomerińiz saqlandı. Qarsılastı kútiń.",
-        "your_turn": "Házir sizdiń gezegińiz. Boljawinizdi jiberiń.",
-        "opponent_turn": "Qarsılastıń gezegi. Kútiń...",
-        "invalid_input": "❌ 4 sanli nomer kiritiń (sanlar qaytalanbasın).",
-        "bulls_cows": "🎯 {bulls} Bull, {cows} Cow.\nGezegińizde qayta urınıp kóriń.",
-        "win": "🥳 Qutlıqlaymız! Siz {attempts} urınısta jeńdińiz!\nQarsılastıń jasırın nomeri: {secret}",
-        "lost": "😔 Ókinishtey, siz uттıldıńız.\nQarsılastıń jasırın nomeri: {secret}",
-        "surrendered_self": "Siz taslim boldıńız. Siz utıldıńız.",
-        "surrendered_opponent": "Qarsılasıńız taslim boldı. Siz jeńdińiz! 🎉",
-        "game_cancelled": "Oyın biykar etildi.",
-        "not_your_turn": "Sizdiń gezegińiz emes❗️",
-        "new_game_button": "🎮 Jańa oyın",
-        "settings_button": "⚙️ Sazlamalar",
-        "subscribe_button": "✅ Jazıldım",
-        "finish_game_button": "🏳️ Taslim bolıw",
-        "send_message_button": "✉️ Xabar jiberiw",
-        "cancel_send_button": "❌ Biykarlaw",
-        "game_rules_button": "📜 Oyın qağıydalari",
-        "surrender_confirm": "Taslim bolıwǵa isenimińiz barma?",
-        "yes_button": "Awa",
-        "no_button": "Yaq",
-        "game_rules": "📜 Oyın qağıydalari:\n\nBulls & Cows oyınında hár bir oyınshı 4 sanli jasırın nomer saylaydi.\n\n🎯 Bull - san durıs hám orni durıs\n🐄 Cow - san durıs, biraq orni durıs emes\n\nJeńimpaz - qarsılastıń jasırın nomerin birinshi tapqan!",
-        "game_not_found": "Aktiv oyın tabılmadı.",
-        "already_in_game": "Siz allaqashan oyındasisiz!",
-        "game_already_started": "Bul oyın allaqashan baslanǵan!",
-        "cannot_play_self": "Ózińiz benen oynay almaysız!",
-        "secret_already_set": "Siz jasırın nomerdi kiritkensiz.",
-        "message_sent": "Xabar jiberildi ✅",
-        "write_message": "Xabarıńızdı jazıń:",
-        "message_from": "💬 {name} dan xabar: {text}",
-        "send_cancelled": "Xabar jiberiw biykar etildi.",
-        "play_again": "Qayta oylaw ushın /start basıń",
-        "waiting_opponent": "Qarsılas kútilmekte...",
-        "back_button": "🔙 Artqa"
+        "welcome": """
+🎮 Welcome to <b>BULLS & COWS</b>!
+
+Number guessing game - be the first to guess opponent's secret!
+
+🎯 <b>Bull</b> - correct digit in correct position
+🐄 <b>Cow</b> - correct digit in wrong position
+""",
+        "choose_language": "🌍 Choose a language:",
+        "subscribe": "📢 Please subscribe to the channel:",
+        "subscribe_button": "📢 Go to channel",
+        "check_sub": "✅ Check",
+        "not_subscribed": "❌ You are not subscribed yet!",
+        "main_menu": """
+🏠 <b>Main Menu</b>
+
+💰 Balance: <b>{coins}</b> coins
+🏆 Rating: <b>{rating}</b>
+🔥 Streak: <b>{streak}</b>
+📊 Wins: <b>{wins}/{games}</b> ({win_rate:.1f}%)
+""",
+        "buttons": {
+            "new_game": "🎮 New Game",
+            "vs_bot": "🤖 vs Bot",
+            "vs_player": "👥 vs Friend",
+            "leaderboard": "🏆 Leaderboard",
+            "profile": "👤 Profile",
+            "stats": "📊 Statistics",
+            "settings": "⚙️ Settings",
+            "shop": "🛒 Shop",
+            "daily": "🎁 Daily Bonus",
+            "hint": "💡 Hint ({cost} coins)",
+            "surrender": "🏳️ Surrender",
+            "message": "✉️ Message",
+            "back": "🔙 Back",
+            "yes": "✅ Yes",
+            "no": "❌ No",
+            "easy": "🟢 Easy (3)",
+            "medium": "🟡 Medium (4)",
+            "hard": "🔴 Hard (5)",
+            "extreme": "⚫ Extreme (6)",
+            "cancel": "❌ Cancel"
+        }
     }
 }
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# YORDAMCHI FUNKSIYALAR
+# HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_user_lang(user_id: int) -> str:
-    """Foydalanuvchi tilini olish."""
-    return user_data.get(user_id, {}).get("language", "uz")
-
-
-def get_msg(user_id: int, key: str, **kwargs) -> str:
-    """Foydalanuvchi tiliga mos xabarni olish."""
-    lang = get_user_lang(user_id)
-    msg = MESSAGES.get(lang, MESSAGES["uz"]).get(key, MESSAGES["uz"].get(key, key))
+def get_text(player: PlayerStats, key: str, **kwargs) -> str:
+    """Tilga mos matnni olish."""
+    lang_msgs = MESSAGES.get(player.language, MESSAGES["uz"])
+    text = lang_msgs.get(key, MESSAGES["uz"].get(key, key))
     if kwargs:
         try:
-            return msg.format(**kwargs)
-        except KeyError:
-            return msg
-    return msg
+            return text.format(**kwargs)
+        except:
+            return text
+    return text
 
+def get_button(player: PlayerStats, key: str, **kwargs) -> str:
+    """Tilga mos tugma matnini olish."""
+    lang_msgs = MESSAGES.get(player.language, MESSAGES["uz"])
+    buttons = lang_msgs.get("buttons", MESSAGES["uz"]["buttons"])
+    text = buttons.get(key, MESSAGES["uz"]["buttons"].get(key, key))
+    if kwargs:
+        try:
+            return text.format(**kwargs)
+        except:
+            return text
+    return text
 
-def init_user(user_id: int, first_name: str) -> None:
-    """Foydalanuvchini ro'yxatdan o'tkazish."""
-    if user_id not in user_data:
-        user_data[user_id] = {"first_name": first_name}
+def generate_secret(length: int) -> str:
+    """Maxfiy raqam generatsiya qilish."""
+    digits = list("0123456789")
+    random.shuffle(digits)
+    # Birinchi raqam 0 bo'lmasligi uchun
+    if digits[0] == "0":
+        for i in range(1, len(digits)):
+            if digits[i] != "0":
+                digits[0], digits[i] = digits[i], digits[0]
+                break
+    return "".join(digits[:length])
 
-
-def is_valid_secret(text: str) -> bool:
-    """Maxfiy raqam to'g'ri formatda ekanligini tekshirish."""
-    if len(text) != 4 or not text.isdigit():
+def validate_number(text: str, length: int) -> bool:
+    """Raqamni tekshirish."""
+    if len(text) != length or not text.isdigit():
         return False
-    # Takrorlanuvchi raqamlar yo'qligini tekshirish
-    return len(set(text)) == 4
-
-
-def is_valid_guess(text: str) -> bool:
-    """Taxmin to'g'ri formatda ekanligini tekshirish."""
-    return len(text) == 4 and text.isdigit()
-
+    return len(set(text)) == length
 
 def calculate_bulls_cows(secret: str, guess: str) -> Tuple[int, int]:
     """Bulls va Cows hisoblash."""
@@ -280,670 +539,1068 @@ def calculate_bulls_cows(secret: str, guess: str) -> Tuple[int, int]:
     cows = sum(min(secret.count(d), guess.count(d)) for d in set(guess)) - bulls
     return bulls, cows
 
+def calculate_rating_change(winner_rating: int, loser_rating: int, k: int = 32) -> int:
+    """ELO rating o'zgarishini hisoblash."""
+    expected = 1 / (1 + 10 ** ((loser_rating - winner_rating) / 400))
+    return int(k * (1 - expected))
 
-def find_game(user_id: int) -> Tuple[Optional[str], Optional[Dict]]:
-    """Foydalanuvchining faol o'yinini topish."""
-    for gid, game in games.items():
-        if game["status"] != FINISHED:
-            if game["player1"] == user_id or game["player2"] == user_id:
-                return gid, game
-    return None, None
+def get_hint_cost(difficulty: Difficulty) -> int:
+    """Hint narxini olish."""
+    costs = {
+        Difficulty.EASY: 20,
+        Difficulty.MEDIUM: 30,
+        Difficulty.HARD: 50,
+        Difficulty.EXTREME: 80
+    }
+    return costs.get(difficulty, 30)
 
-
-def get_opponent_id(game: Dict, user_id: int) -> Optional[int]:
-    """Raqib ID sini olish."""
-    if game["player1"] == user_id:
-        return game["player2"]
-    return game["player1"]
-
-
-def cleanup_finished_games() -> None:
-    """Tugagan o'yinlarni tozalash."""
-    finished = [gid for gid, game in games.items() if game["status"] == FINISHED]
-    for gid in finished:
-        del games[gid]
-
+def get_max_hints(difficulty: Difficulty) -> int:
+    """Maksimal hint sonini olish."""
+    return difficulty.value - 1
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# KLAVIATURA FUNKSIYALARI
+# AI BOT LOGIC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AIPlayer:
+    """Sun'iy intellekt o'yinchi."""
+    
+    def __init__(self, difficulty: Difficulty):
+        self.difficulty = difficulty
+        self.length = difficulty.value
+        self.possible_numbers = self._generate_all_numbers()
+        self.guesses = []
+    
+    def _generate_all_numbers(self) -> List[str]:
+        """Barcha mumkin bo'lgan raqamlarni generatsiya qilish."""
+        from itertools import permutations
+        digits = "0123456789"
+        all_nums = []
+        for perm in permutations(digits, self.length):
+            if perm[0] != "0":  # 0 bilan boshlanmasin
+                all_nums.append("".join(perm))
+        return all_nums
+    
+    def make_guess(self) -> str:
+        """Taxmin qilish."""
+        if not self.guesses:
+            # Birinchi taxmin - tasodifiy
+            guess = random.choice(self.possible_numbers)
+        else:
+            # Eng yaxshi taxminni tanlash (minimax strategiya)
+            guess = random.choice(self.possible_numbers) if self.possible_numbers else generate_secret(self.length)
+        
+        self.guesses.append(guess)
+        return guess
+    
+    def update_possibilities(self, guess: str, bulls: int, cows: int) -> None:
+        """Mumkin bo'lgan raqamlarni yangilash."""
+        self.possible_numbers = [
+            num for num in self.possible_numbers
+            if calculate_bulls_cows(num, guess) == (bulls, cows)
+        ]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KEYBOARDS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_language_keyboard() -> InlineKeyboardMarkup:
     """Til tanlash klaviaturasi."""
-    keyboard = [[InlineKeyboardButton(name, callback_data=f"lang_{code}")]
-                for code, name in LANGUAGES.items()]
-    return InlineKeyboardMarkup(keyboard)
+    buttons = [[InlineKeyboardButton(text=name, callback_data=f"lang:{code}")]
+               for code, name in LANGUAGES.items()]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def get_subscribe_keyboard(player: PlayerStats) -> InlineKeyboardMarkup:
+    """Obuna klaviaturasi."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=get_button(player, "subscribe_button"), url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
+        [InlineKeyboardButton(text=get_button(player, "check_sub"), callback_data="check_sub")]
+    ])
 
-def get_main_menu(user_id: int) -> InlineKeyboardMarkup:
+def get_main_menu_keyboard(player: PlayerStats) -> InlineKeyboardMarkup:
     """Asosiy menyu klaviaturasi."""
-    lang = get_user_lang(user_id)
-    msgs = MESSAGES.get(lang, MESSAGES["uz"])
-    keyboard = [
-        [InlineKeyboardButton(msgs["new_game_button"], callback_data="new_game")],
-        [InlineKeyboardButton(msgs["game_rules_button"], callback_data="game_rules")],
-        [InlineKeyboardButton(msgs["settings_button"], callback_data="settings")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_subscribe_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Obuna bo'lish klaviaturasi."""
-    lang = get_user_lang(user_id)
-    msgs = MESSAGES.get(lang, MESSAGES["uz"])
-    keyboard = [[InlineKeyboardButton(msgs["subscribe_button"], callback_data="check_subscription")]]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_game_controls(user_id: int) -> InlineKeyboardMarkup:
-    """O'yin boshqaruv klaviaturasi."""
-    lang = get_user_lang(user_id)
-    msgs = MESSAGES.get(lang, MESSAGES["uz"])
-    keyboard = [
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=get_button(player, "new_game"), callback_data="new_game")],
         [
-            InlineKeyboardButton(msgs["finish_game_button"], callback_data="finish_game"),
-            InlineKeyboardButton(msgs["send_message_button"], callback_data="send_message")
+            InlineKeyboardButton(text=get_button(player, "leaderboard"), callback_data="leaderboard"),
+            InlineKeyboardButton(text=get_button(player, "profile"), callback_data="profile")
+        ],
+        [
+            InlineKeyboardButton(text=get_button(player, "daily"), callback_data="daily"),
+            InlineKeyboardButton(text=get_button(player, "stats"), callback_data="stats")
+        ],
+        [
+            InlineKeyboardButton(text=get_button(player, "shop"), callback_data="shop"),
+            InlineKeyboardButton(text=get_button(player, "settings"), callback_data="settings")
         ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    ])
 
+def get_mode_keyboard(player: PlayerStats) -> InlineKeyboardMarkup:
+    """O'yin turi klaviaturasi."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=get_button(player, "vs_bot"), callback_data="mode:vs_bot")],
+        [InlineKeyboardButton(text=get_button(player, "vs_player"), callback_data="mode:vs_player")],
+        [InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:main")]
+    ])
 
-def get_surrender_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Taslim bo'lish tasdiqlash klaviaturasi."""
-    lang = get_user_lang(user_id)
-    msgs = MESSAGES.get(lang, MESSAGES["uz"])
-    keyboard = [[
-        InlineKeyboardButton(msgs["yes_button"], callback_data="surrender_yes"),
-        InlineKeyboardButton(msgs["no_button"], callback_data="surrender_no")
-    ]]
-    return InlineKeyboardMarkup(keyboard)
+def get_difficulty_keyboard(player: PlayerStats) -> InlineKeyboardMarkup:
+    """Qiyinlik klaviaturasi."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=get_button(player, "easy"), callback_data="diff:easy")],
+        [InlineKeyboardButton(text=get_button(player, "medium"), callback_data="diff:medium")],
+        [InlineKeyboardButton(text=get_button(player, "hard"), callback_data="diff:hard")],
+        [InlineKeyboardButton(text=get_button(player, "extreme"), callback_data="diff:extreme")],
+        [InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:mode")]
+    ])
 
-
-def get_cancel_send_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Xabar yuborishni bekor qilish klaviaturasi."""
-    lang = get_user_lang(user_id)
-    msgs = MESSAGES.get(lang, MESSAGES["uz"])
-    keyboard = [[InlineKeyboardButton(msgs["cancel_send_button"], callback_data="cancel_send")]]
-    return InlineKeyboardMarkup(keyboard)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ASOSIY HANDLERLAR
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def start_handler(update: Update, context: CallbackContext) -> None:
-    """Start komandasi handleri."""
-    user = update.effective_user
-    init_user(user.id, user.first_name)
+def get_game_keyboard(player: PlayerStats, game: Game) -> InlineKeyboardMarkup:
+    """O'yin klaviaturasi."""
+    hint_cost = get_hint_cost(game.difficulty)
+    max_hints = get_max_hints(game.difficulty)
+    used_hints = game.hints_used.get(player.user_id, 0)
+    hints_left = max_hints - used_hints
     
-    # Taklifnoma bilan kelgan bo'lsa
-    if context.args and context.args[0].startswith("invite_"):
-        if "language" in user_data[user.id]:
-            await process_invite(update, context, context.args[0])
-        else:
-            user_data[user.id]["pending_invite"] = context.args[0]
-            await update.message.reply_text(
-                "Tilni tanlang / Выберите язык / Choose a language:",
-                reply_markup=get_language_keyboard()
+    buttons = []
+    
+    if hints_left > 0:
+        buttons.append([
+            InlineKeyboardButton(
+                text=get_button(player, "hint", cost=hint_cost),
+                callback_data="hint"
             )
-        return
+        ])
     
-    # Faol o'yinda bo'lsa
-    gid, game = find_game(user.id)
-    if game and game["status"] in [PLAYING, WAITING_FOR_SECRET]:
-        await update.message.reply_text(
-            get_msg(user.id, "surrender_confirm"),
-            reply_markup=get_surrender_confirm_keyboard(user.id)
-        )
-        return
+    buttons.append([
+        InlineKeyboardButton(text=get_button(player, "surrender"), callback_data="surrender"),
+        InlineKeyboardButton(text=get_button(player, "message"), callback_data="send_msg")
+    ])
     
-    # Kutilayotgan o'yinni bekor qilish
-    if game and game["status"] == WAITING_FOR_PLAYERS and game["player1"] == user.id:
-        game["status"] = FINISHED
-        await update.message.reply_text(get_msg(user.id, "game_cancelled"))
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_confirm_keyboard(player: PlayerStats) -> InlineKeyboardMarkup:
+    """Tasdiqlash klaviaturasi."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=get_button(player, "yes"), callback_data="confirm:yes"),
+            InlineKeyboardButton(text=get_button(player, "no"), callback_data="confirm:no")
+        ]
+    ])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+router = Router()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# START & LANGUAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    """Start komandasi."""
+    user = message.from_user
+    player = db.get_or_create_player(user)
     
-    # Til tanlanmagan bo'lsa
-    if "language" not in user_data[user.id]:
-        await update.message.reply_text(
-            "Tilni tanlang / Выберите язык / Choose a language:",
+    # Invite link tekshirish
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("invite_"):
+        await state.update_data(pending_invite=args[1])
+    
+    # Til tanlanmaganmi
+    if not player.language:
+        await state.set_state(GameStates.choosing_language)
+        await message.answer(
+            "🌍 Tilni tanlang / Выберите язык / Choose language:",
             reply_markup=get_language_keyboard()
         )
         return
     
-    # Obuna tekshirish
-    if not user_data[user.id].get("subscribed", False):
-        await update.message.reply_text(
-            get_msg(user.id, "subscribe"),
-            parse_mode="Markdown",
-            reply_markup=get_subscribe_keyboard(user.id)
+    # Faol o'yin tekshirish
+    active_game = db.get_active_game(user.id)
+    if active_game and not active_game.is_finished:
+        await message.answer(
+            get_text(player, "surrender_confirm"),
+            reply_markup=get_confirm_keyboard(player)
         )
         return
     
-    # Asosiy menyuni ko'rsatish
-    cleanup_finished_games()
-    await update.message.reply_text(
-        get_msg(user.id, "main_menu"),
-        reply_markup=get_main_menu(user.id)
+    await show_main_menu(message, player, state)
+
+@router.callback_query(F.data.startswith("lang:"))
+async def select_language(callback: CallbackQuery, state: FSMContext):
+    """Til tanlash."""
+    lang_code = callback.data.split(":")[1]
+    player = db.get_or_create_player(callback.from_user)
+    player.language = lang_code
+    db.save_player(player)
+    
+    await callback.answer()
+    
+    # Obuna tekshirish
+    await callback.message.edit_text(
+        get_text(player, "subscribe"),
+        reply_markup=get_subscribe_keyboard(player)
     )
 
-
-async def set_language_handler(update: Update, context: CallbackContext) -> None:
-    """Til tanlash handleri (birinchi marta)."""
-    query = update.callback_query
-    await query.answer()
-    
-    lang_code = query.data.split("_")[1]
-    user_id = query.from_user.id
-    
-    init_user(user_id, query.from_user.first_name)
-    user_data[user_id]["language"] = lang_code
-    user_data[user_id]["subscribed"] = False
-    
-    await query.edit_message_text(
-        get_msg(user_id, "subscribe"),
-        parse_mode="Markdown",
-        reply_markup=get_subscribe_keyboard(user_id)
-    )
-
-
-async def change_language_handler(update: Update, context: CallbackContext) -> None:
-    """Tilni o'zgartirish handleri (sozlamalardan)."""
-    query = update.callback_query
-    await query.answer()
-    
-    lang_code = query.data.split("_")[1]
-    user_id = query.from_user.id
-    
-    user_data[user_id]["language"] = lang_code
-    confirm = get_msg(user_id, "lang_confirmed", lang=LANGUAGES[lang_code])
-    
-    await query.edit_message_text(
-        f"{confirm}\n\n{get_msg(user_id, 'main_menu')}",
-        reply_markup=get_main_menu(user_id)
-    )
-
-
-async def settings_handler(update: Update, context: CallbackContext) -> None:
-    """Sozlamalar handleri."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    keyboard = [[InlineKeyboardButton(name, callback_data=f"setlang_{code}")]
-                for code, name in LANGUAGES.items()]
-    keyboard.append([InlineKeyboardButton(
-        get_msg(user_id, "back_button"),
-        callback_data="back_to_menu"
-    )])
-    
-    await query.edit_message_text(
-        get_msg(user_id, "choose_language"),
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def back_to_menu_handler(update: Update, context: CallbackContext) -> None:
-    """Asosiy menyuga qaytish."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    await query.edit_message_text(
-        get_msg(user_id, "main_menu"),
-        reply_markup=get_main_menu(user_id)
-    )
-
-
-async def check_subscription_handler(update: Update, context: CallbackContext) -> None:
-    """Obuna tekshirish handleri."""
-    query = update.callback_query
-    user_id = query.from_user.id
-    channel_username = "@samancikschannel"
+@router.callback_query(F.data == "check_sub")
+async def check_subscription(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Obuna tekshirish."""
+    player = db.get_player(callback.from_user.id)
     
     try:
-        member = await context.bot.get_chat_member(channel_username, user_id)
+        member = await bot.get_chat_member(CHANNEL_USERNAME, callback.from_user.id)
         if member.status in ["member", "creator", "administrator", "restricted"]:
-            user_data[user_id]["subscribed"] = True
-            await query.answer(get_msg(user_id, "subscription_confirmed"), show_alert=True)
+            await callback.answer("✅")
             
-            # Kutilayotgan taklifnoma bo'lsa
-            if "pending_invite" in user_data[user_id]:
-                invite = user_data[user_id].pop("pending_invite")
-                await query.edit_message_text(get_msg(user_id, "main_menu"))
-                await process_invite(update, context, invite)
+            # Pending invite tekshirish
+            data = await state.get_data()
+            if "pending_invite" in data:
+                await process_invite(callback.message, player, data["pending_invite"], state, bot)
             else:
-                await query.edit_message_text(
-                    get_msg(user_id, "main_menu"),
-                    reply_markup=get_main_menu(user_id)
-                )
+                await show_main_menu(callback.message, player, state, edit=True)
         else:
-            await query.answer(get_msg(user_id, "not_subscribed"), show_alert=True)
+            await callback.answer(get_text(player, "not_subscribed"), show_alert=True)
     except Exception as e:
-        logger.error("Subscription check error: %s", e)
-        await query.answer(get_msg(user_id, "not_subscribed"), show_alert=True)
+        logger.error(f"Subscription check error: {e}")
+        await callback.answer(get_text(player, "not_subscribed"), show_alert=True)
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN MENU
+# ═══════════════════════════════════════════════════════════════════════════════
 
-async def game_rules_handler(update: Update, context: CallbackContext) -> None:
-    """O'yin qoidalari handleri."""
-    query = update.callback_query
-    await query.answer()
+async def show_main_menu(message: Message, player: PlayerStats, state: FSMContext, edit: bool = False):
+    """Asosiy menyuni ko'rsatish."""
+    await state.set_state(GameStates.main_menu)
     
-    user_id = query.from_user.id
-    keyboard = [[InlineKeyboardButton(
-        get_msg(user_id, "back_button"),
-        callback_data="back_to_menu"
-    )]]
-    
-    await query.edit_message_text(
-        get_msg(user_id, "game_rules"),
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    text = get_text(
+        player, "main_menu",
+        coins=player.coins,
+        rating=player.rating,
+        streak=player.current_streak,
+        wins=player.games_won,
+        games=player.games_played,
+        win_rate=player.win_rate
     )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# O'YIN HANDLERLARI
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def new_game_handler(update: Update, context: CallbackContext) -> None:
-    """Yangi o'yin yaratish handleri."""
-    global game_counter
-    query = update.callback_query
-    user_id = query.from_user.id
     
-    # Faol o'yinda emasligini tekshirish
-    _, existing_game = find_game(user_id)
-    if existing_game:
-        await query.answer(get_msg(user_id, "already_in_game"), show_alert=True)
+    if edit:
+        await message.edit_text(text, reply_markup=get_main_menu_keyboard(player), parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=get_main_menu_keyboard(player), parse_mode="HTML")
+
+@router.callback_query(F.data == "back:main")
+async def back_to_main(callback: CallbackQuery, state: FSMContext):
+    """Asosiy menyuga qaytish."""
+    player = db.get_player(callback.from_user.id)
+    await callback.answer()
+    await show_main_menu(callback.message, player, state, edit=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW GAME
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "new_game")
+async def new_game(callback: CallbackQuery, state: FSMContext):
+    """Yangi o'yin."""
+    player = db.get_player(callback.from_user.id)
+    
+    # Faol o'yin tekshirish
+    active_game = db.get_active_game(callback.from_user.id)
+    if active_game:
+        await callback.answer("Siz allaqachon o'yinda ishtirok etmoqdasiz!", show_alert=True)
         return
     
-    await query.answer()
+    await callback.answer()
+    await state.set_state(GameStates.choosing_mode)
     
-    game_id = str(game_counter)
-    game_counter += 1
+    await callback.message.edit_text(
+        get_text(player, "choose_mode"),
+        reply_markup=get_mode_keyboard(player),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data.startswith("mode:"))
+async def select_mode(callback: CallbackQuery, state: FSMContext):
+    """O'yin turini tanlash."""
+    mode = callback.data.split(":")[1]
+    player = db.get_player(callback.from_user.id)
     
-    games[game_id] = {
-        "player1": user_id,
-        "player2": None,
-        "secret1": None,
-        "secret2": None,
-        "status": WAITING_FOR_PLAYERS,
-        "turn": None,
-        "attempts": {user_id: 0}
+    await state.update_data(game_mode=mode)
+    await callback.answer()
+    await state.set_state(GameStates.choosing_difficulty)
+    
+    await callback.message.edit_text(
+        get_text(player, "choose_difficulty"),
+        reply_markup=get_difficulty_keyboard(player),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data == "back:mode")
+async def back_to_mode(callback: CallbackQuery, state: FSMContext):
+    """O'yin turiga qaytish."""
+    player = db.get_player(callback.from_user.id)
+    await callback.answer()
+    await state.set_state(GameStates.choosing_mode)
+    
+    await callback.message.edit_text(
+        get_text(player, "choose_mode"),
+        reply_markup=get_mode_keyboard(player),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data.startswith("diff:"))
+async def select_difficulty(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Qiyinlikni tanlash."""
+    diff_map = {
+        "easy": Difficulty.EASY,
+        "medium": Difficulty.MEDIUM,
+        "hard": Difficulty.HARD,
+        "extreme": Difficulty.EXTREME
     }
     
-    bot_username = (await context.bot.get_me()).username
-    invite_link = f"https://t.me/{bot_username}?start=invite_{game_id}"
+    diff_name = callback.data.split(":")[1]
+    difficulty = diff_map.get(diff_name, Difficulty.MEDIUM)
     
-    await query.edit_message_text(
-        get_msg(user_id, "game_created", invite_link=invite_link)
-    )
+    player = db.get_player(callback.from_user.id)
+    data = await state.get_data()
+    mode_str = data.get("game_mode", "vs_bot")
+    mode = GameMode.VS_BOT if mode_str == "vs_bot" else GameMode.VS_PLAYER
+    
+    await callback.answer()
+    
+    # O'yin yaratish
+    game = db.create_game(player.user_id, mode, difficulty)
+    await state.update_data(game_id=game.game_id)
+    
+    if mode == GameMode.VS_BOT:
+        # Bot bilan o'yin
+        game.player2_id = 0  # Bot ID
+        game.secret2 = generate_secret(difficulty.value)
+        db.games[game.game_id] = game
+        if game.game_id in db.pending_games:
+            del db.pending_games[game.game_id]
+        
+        await state.set_state(GameStates.entering_secret)
+        await callback.message.edit_text(
+            get_text(player, "game_started", opponent="🤖 Bot", difficulty=difficulty.value),
+            parse_mode="HTML"
+        )
+    else:
+        # Do'st bilan o'yin
+        bot_info = await bot.get_me()
+        invite_link = f"https://t.me/{bot_info.username}?start=invite_{game.game_id}"
+        
+        await state.set_state(GameStates.waiting_for_opponent)
+        await callback.message.edit_text(
+            get_text(player, "game_created", invite_link=invite_link),
+            parse_mode="HTML"
+        )
 
-
-async def process_invite(update: Update, context: CallbackContext, invite_arg: str) -> None:
+async def process_invite(message: Message, player: PlayerStats, invite_arg: str, state: FSMContext, bot: Bot):
     """Taklifnomani qayta ishlash."""
-    user = update.effective_user
-    user_id = user.id
+    game_id = invite_arg.replace("invite_", "")
+    game = db.get_game(game_id)
     
-    game_id = invite_arg.split("_")[1]
-    
-    if game_id not in games:
-        await context.bot.send_message(user_id, get_msg(user_id, "game_not_found"))
+    if not game:
+        await message.edit_text("❌ O'yin topilmadi!")
         return
     
-    game = games[game_id]
-    
-    # O'zi bilan o'ynashni oldini olish
-    if game["player1"] == user_id:
-        await context.bot.send_message(user_id, get_msg(user_id, "cannot_play_self"))
+    if game.player1_id == player.user_id:
+        await message.edit_text("❌ O'zingiz bilan o'ynay olmaysiz!")
         return
     
-    if game["player2"] is not None:
-        await context.bot.send_message(user_id, get_msg(user_id, "game_already_started"))
+    if game.player2_id is not None:
+        await message.edit_text("❌ Bu o'yin allaqachon boshlangan!")
         return
     
     # O'yinni boshlash
-    game["player2"] = user_id
-    game["status"] = WAITING_FOR_SECRET
-    game["attempts"][user_id] = 0
+    game.player2_id = player.user_id
+    game.attempts[player.user_id] = 0
+    game.hints_used[player.user_id] = 0
     
-    p1_name = user_data.get(game["player1"], {}).get("first_name", "Opponent")
-    p2_name = user_data.get(user_id, {}).get("first_name", "Opponent")
+    if game.game_id in db.pending_games:
+        db.games[game.game_id] = game
+        del db.pending_games[game.game_id]
     
-    # Ikkala o'yinchiga xabar yuborish
-    await context.bot.send_message(
-        game["player1"],
-        get_msg(game["player1"], "game_start_info", opponent=p2_name)
-    )
-    await context.bot.send_message(
-        user_id,
-        get_msg(user_id, "game_start_info", opponent=p1_name)
-    )
-
-
-async def finish_game_handler(update: Update, context: CallbackContext) -> None:
-    """O'yinni tugatish (taslim bo'lish) handleri."""
-    query = update.callback_query
-    user_id = query.from_user.id
+    await state.update_data(game_id=game.game_id)
+    await state.set_state(GameStates.entering_secret)
     
-    gid, game = find_game(user_id)
-    if not game:
-        await query.answer(get_msg(user_id, "game_not_found"), show_alert=True)
-        return
+    # Ikkala o'yinchiga xabar
+    player1 = db.get_player(game.player1_id)
     
-    await query.answer()
-    await query.edit_message_text(
-        get_msg(user_id, "surrender_confirm"),
-        reply_markup=get_surrender_confirm_keyboard(user_id)
-    )
-
-
-async def surrender_yes_handler(update: Update, context: CallbackContext) -> None:
-    """Taslim bo'lishni tasdiqlash."""
-    query = update.callback_query
-    user_id = query.from_user.id
-    
-    gid, game = find_game(user_id)
-    if not game:
-        await query.answer(get_msg(user_id, "game_not_found"), show_alert=True)
-        return
-    
-    await query.answer()
-    game["status"] = FINISHED
-    
-    # O'yinchiga xabar
-    await query.edit_message_text(
-        f"{get_msg(user_id, 'surrendered_self')}\n\n{get_msg(user_id, 'play_again')}"
-    )
-    await context.bot.send_message(
-        user_id,
-        get_msg(user_id, "main_menu"),
-        reply_markup=get_main_menu(user_id)
+    await bot.send_message(
+        game.player1_id,
+        get_text(player1, "game_started", opponent=player.first_name, difficulty=game.difficulty.value),
+        parse_mode="HTML"
     )
     
-    # Raqibga xabar
-    opponent_id = get_opponent_id(game, user_id)
-    if opponent_id:
-        await context.bot.send_message(
-            opponent_id,
-            f"{get_msg(opponent_id, 'surrendered_opponent')}\n\n{get_msg(opponent_id, 'play_again')}"
-        )
-        await context.bot.send_message(
-            opponent_id,
-            get_msg(opponent_id, "main_menu"),
-            reply_markup=get_main_menu(opponent_id)
-        )
-
-
-async def surrender_no_handler(update: Update, context: CallbackContext) -> None:
-    """Taslim bo'lishni bekor qilish."""
-    query = update.callback_query
-    user_id = query.from_user.id
-    
-    gid, game = find_game(user_id)
-    
-    await query.answer()
-    
-    if game and game["status"] == PLAYING:
-        if game["turn"] == user_id:
-            msg = get_msg(user_id, "your_turn")
-        else:
-            msg = get_msg(user_id, "opponent_turn")
-        await query.edit_message_text(msg, reply_markup=get_game_controls(user_id))
-    elif game and game["status"] == WAITING_FOR_SECRET:
-        await query.edit_message_text(
-            get_msg(user_id, "prompt_secret"),
-            reply_markup=get_game_controls(user_id)
-        )
-    else:
-        await query.edit_message_text(
-            get_msg(user_id, "main_menu"),
-            reply_markup=get_main_menu(user_id)
-        )
-
-
-async def send_message_handler(update: Update, context: CallbackContext) -> None:
-    """Xabar yuborish tugmasi handleri."""
-    query = update.callback_query
-    user_id = query.from_user.id
-    
-    gid, game = find_game(user_id)
-    if not game or game["status"] not in [PLAYING, WAITING_FOR_SECRET]:
-        await query.answer(get_msg(user_id, "game_not_found"), show_alert=True)
-        return
-    
-    await query.answer()
-    pending_send[user_id] = gid
-    
-    await query.edit_message_text(
-        get_msg(user_id, "write_message"),
-        reply_markup=get_cancel_send_keyboard(user_id)
+    await message.edit_text(
+        get_text(player, "game_started", opponent=player1.first_name, difficulty=game.difficulty.value),
+        parse_mode="HTML"
     )
-
-
-async def cancel_send_handler(update: Update, context: CallbackContext) -> None:
-    """Xabar yuborishni bekor qilish."""
-    query = update.callback_query
-    user_id = query.from_user.id
-    
-    if user_id in pending_send:
-        del pending_send[user_id]
-    
-    await query.answer(get_msg(user_id, "send_cancelled"), show_alert=True)
-    
-    gid, game = find_game(user_id)
-    if game and game["status"] == PLAYING:
-        if game["turn"] == user_id:
-            msg = get_msg(user_id, "your_turn")
-        else:
-            msg = get_msg(user_id, "opponent_turn")
-        await query.edit_message_text(msg, reply_markup=get_game_controls(user_id))
-    else:
-        await query.edit_message_text(
-            get_msg(user_id, "main_menu"),
-            reply_markup=get_main_menu(user_id)
-        )
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# XABAR HANDLERI
+# GAME LOGIC
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def handle_message(update: Update, context: CallbackContext) -> None:
-    """Matn xabarlarini qayta ishlash."""
-    user = update.effective_user
-    user_id = user.id
-    text = update.message.text.strip()
+@router.message(StateFilter(GameStates.entering_secret))
+async def enter_secret(message: Message, state: FSMContext, bot: Bot):
+    """Maxfiy raqam kiritish."""
+    player = db.get_player(message.from_user.id)
+    data = await state.get_data()
+    game_id = data.get("game_id")
+    game = db.get_game(game_id)
     
-    # Xabar yuborish rejimida
-    if user_id in pending_send:
-        gid = pending_send.pop(user_id)
-        game = games.get(gid)
-        
-        if not game or game["status"] == FINISHED:
-            await update.message.reply_text(get_msg(user_id, "game_not_found"))
-            return
-        
-        opponent_id = get_opponent_id(game, user_id)
-        if opponent_id:
-            await context.bot.send_message(
-                opponent_id,
-                get_msg(opponent_id, "message_from", name=user.first_name, text=text)
-            )
-        
-        await update.message.reply_text(
-            get_msg(user_id, "message_sent"),
-            reply_markup=get_game_controls(user_id)
-        )
-        return
-    
-    # O'yinni topish
-    gid, game = find_game(user_id)
     if not game:
-        await update.message.reply_text(
-            f"{get_msg(user_id, 'game_not_found')}\n\n{get_msg(user_id, 'play_again')}"
-        )
+        await message.answer("❌ O'yin topilmadi!")
         return
     
-    # Maxfiy raqam kiritish
-    if game["status"] == WAITING_FOR_SECRET:
-        await handle_secret_input(update, context, game, gid, user_id, text)
-        return
+    text = message.text.strip()
+    length = game.difficulty.value
     
-    # Taxmin kiritish
-    if game["status"] == PLAYING:
-        await handle_guess_input(update, context, game, gid, user_id, text)
-        return
-
-
-async def handle_secret_input(update: Update, context: CallbackContext, 
-                              game: Dict, gid: str, user_id: int, text: str) -> None:
-    """Maxfiy raqam kiritishni qayta ishlash."""
-    if not is_valid_secret(text):
-        await update.message.reply_text(get_msg(user_id, "invalid_input"))
+    if not validate_number(text, length):
+        await message.answer(get_text(player, "invalid_input", digits=length))
         return
     
     # Maxfiy raqamni saqlash
-    if user_id == game["player1"]:
-        if game["secret1"] is not None:
-            await update.message.reply_text(get_msg(user_id, "secret_already_set"))
-            return
-        game["secret1"] = text
+    if game.player1_id == player.user_id:
+        game.secret1 = text
     else:
-        if game["secret2"] is not None:
-            await update.message.reply_text(get_msg(user_id, "secret_already_set"))
-            return
-        game["secret2"] = text
+        game.secret2 = text
     
-    await update.message.reply_text(get_msg(user_id, "secret_set"))
+    await message.answer(get_text(player, "secret_set"))
     
-    # Ikkala o'yinchi ham kiritganmi?
-    if game["secret1"] and game["secret2"]:
-        game["status"] = PLAYING
-        game["turn"] = game["player1"]
+    # Ikkala o'yinchi ham kiritdimi?
+    if game.secret1 and game.secret2:
+        game.started_at = datetime.now().isoformat()
+        game.turn = game.player1_id
         
-        # Player1 ga navbat xabari
-        await context.bot.send_message(
-            game["player1"],
-            get_msg(game["player1"], "your_turn"),
-            reply_markup=get_game_controls(game["player1"])
+        await state.set_state(GameStates.playing)
+        
+        # Player1 ga navbat
+        player1 = db.get_player(game.player1_id)
+        await bot.send_message(
+            game.player1_id,
+            get_text(player1, "your_turn", time=game.time_limit, hints=get_max_hints(game.difficulty)),
+            reply_markup=get_game_keyboard(player1, game),
+            parse_mode="HTML"
         )
         
-        # Player2 ga kutish xabari
-        await context.bot.send_message(
-            game["player2"],
-            get_msg(game["player2"], "opponent_turn"),
-            reply_markup=get_game_controls(game["player2"])
-        )
+        # Player2 ga kuting
+        if game.player2_id and game.player2_id != 0:
+            player2 = db.get_player(game.player2_id)
+            await bot.send_message(
+                game.player2_id,
+                get_text(player2, "opponent_turn"),
+                parse_mode="HTML"
+            )
 
-
-async def handle_guess_input(update: Update, context: CallbackContext,
-                             game: Dict, gid: str, user_id: int, text: str) -> None:
-    """Taxminni qayta ishlash."""
-    # Navbatni tekshirish
-    if user_id != game["turn"]:
-        await update.message.reply_text(get_msg(user_id, "not_your_turn"))
+@router.message(StateFilter(GameStates.playing))
+async def make_guess(message: Message, state: FSMContext, bot: Bot):
+    """Taxmin qilish."""
+    player = db.get_player(message.from_user.id)
+    data = await state.get_data()
+    game_id = data.get("game_id")
+    game = db.get_game(game_id)
+    
+    if not game:
+        await message.answer("❌ O'yin topilmadi!")
         return
     
-    # Formatni tekshirish
-    if not is_valid_guess(text):
-        await update.message.reply_text(get_msg(user_id, "invalid_input"))
+    # Navbat tekshirish
+    if game.turn != player.user_id:
+        await message.answer(get_text(player, "not_your_turn"))
         return
     
-    game["attempts"][user_id] += 1
-    opponent_id = get_opponent_id(game, user_id)
+    text = message.text.strip()
+    length = game.difficulty.value
     
-    # Raqibning maxfiy raqami
-    if user_id == game["player1"]:
-        target_secret = game["secret2"]
-        own_secret = game["secret1"]
+    if not validate_number(text, length):
+        await message.answer(get_text(player, "invalid_input", digits=length))
+        return
+    
+    game.attempts[player.user_id] += 1
+    
+    # Natijani hisoblash
+    if player.user_id == game.player1_id:
+        secret = game.secret2
+        own_secret = game.secret1
+        opponent_id = game.player2_id
     else:
-        target_secret = game["secret1"]
-        own_secret = game["secret2"]
+        secret = game.secret1
+        own_secret = game.secret2
+        opponent_id = game.player1_id
     
-    bulls, cows = calculate_bulls_cows(target_secret, text)
+    bulls, cows = calculate_bulls_cows(secret, text)
     
-    # G'alaba!
-    if bulls == 4:
-        game["status"] = FINISHED
-        
-        # G'olibga xabar
-        await update.message.reply_text(
-            get_msg(user_id, "win", attempts=game["attempts"][user_id], secret=target_secret)
-        )
-        await context.bot.send_message(
-            user_id,
-            get_msg(user_id, "main_menu"),
-            reply_markup=get_main_menu(user_id)
-        )
-        
-        # Mag'lubga xabar
-        if opponent_id:
-            await context.bot.send_message(
-                opponent_id,
-                get_msg(opponent_id, "lost", secret=own_secret)
-            )
-            await context.bot.send_message(
-                opponent_id,
-                get_msg(opponent_id, "main_menu"),
-                reply_markup=get_main_menu(opponent_id)
-            )
+    # Tarixga qo'shish
+    game.history.append({
+        "player": player.user_id,
+        "guess": text,
+        "bulls": bulls,
+        "cows": cows
+    })
+    
+    # G'alaba tekshirish
+    if bulls == length:
+        await handle_win(message, player, game, secret, own_secret, opponent_id, bot, state)
         return
     
-    # Natija xabari
-    result_msg = get_msg(user_id, "bulls_cows", bulls=bulls, cows=cows)
-    await update.message.reply_text(result_msg)
-    
-    # Navbatni o'zgartirish
-    game["turn"] = opponent_id
-    
-    # Ikkala o'yinchiga navbat haqida xabar
-    await context.bot.send_message(
-        user_id,
-        get_msg(user_id, "opponent_turn"),
-        reply_markup=get_game_controls(user_id)
+    # Natijani ko'rsatish
+    await message.answer(
+        get_text(player, "result", guess=text, bulls=bulls, cows=cows, attempts=game.attempts[player.user_id]),
+        parse_mode="HTML"
     )
     
-    if opponent_id:
-        await context.bot.send_message(
+    # Bot bilan o'yin
+    if game.mode == GameMode.VS_BOT:
+        await asyncio.sleep(1)  # Bot "o'ylayapti"
+        await bot_make_move(message, player, game, bot, state)
+    else:
+        # Navbatni o'zgartirish
+        game.turn = opponent_id
+        
+        if opponent_id:
+            opponent = db.get_player(opponent_id)
+            await bot.send_message(
+                opponent_id,
+                get_text(opponent, "your_turn", time=game.time_limit, hints=get_max_hints(game.difficulty) - game.hints_used.get(opponent_id, 0)),
+                reply_markup=get_game_keyboard(opponent, game),
+                parse_mode="HTML"
+            )
+        
+        await message.answer(get_text(player, "opponent_turn"))
+
+async def bot_make_move(message: Message, player: PlayerStats, game: Game, bot: Bot, state: FSMContext):
+    """Bot taxmin qiladi."""
+    # AI yaratish yoki olish
+    data = await state.get_data()
+    ai_data = data.get("ai_possibilities")
+    
+    if not ai_data:
+        ai = AIPlayer(game.difficulty)
+    else:
+        ai = AIPlayer(game.difficulty)
+        ai.possible_numbers = ai_data
+        ai.guesses = [h["guess"] for h in game.history if h["player"] == 0]
+    
+    # Oldingi natijalardan o'rganish
+    for entry in game.history:
+        if entry["player"] == 0:  # Bot taxminlari
+            ai.update_possibilities(entry["guess"], entry["bulls"], entry["cows"])
+    
+    # Yangi taxmin
+    guess = ai.make_guess()
+    game.attempts[0] = game.attempts.get(0, 0) + 1
+    
+    bulls, cows = calculate_bulls_cows(game.secret1, guess)
+    
+    game.history.append({
+        "player": 0,
+        "guess": guess,
+        "bulls": bulls,
+        "cows": cows
+    })
+    
+    # AI holatini saqlash
+    ai.update_possibilities(guess, bulls, cows)
+    await state.update_data(ai_possibilities=ai.possible_numbers)
+    
+    # G'alaba tekshirish
+    if bulls == game.difficulty.value:
+        await handle_loss(message, player, game, game.secret1, game.secret2, bot, state)
+        return
+    
+    # Natijani ko'rsatish
+    await message.answer(
+        f"🤖 Bot taxmini: <code>{guess}</code>\n🎯 {bulls} Bull | 🐄 {cows} Cow",
+        parse_mode="HTML"
+    )
+    
+    # Navbat o'yinchiga
+    game.turn = player.user_id
+    await message.answer(
+        get_text(player, "your_turn", time=game.time_limit, hints=get_max_hints(game.difficulty) - game.hints_used.get(player.user_id, 0)),
+        reply_markup=get_game_keyboard(player, game),
+        parse_mode="HTML"
+    )
+
+async def handle_win(message: Message, player: PlayerStats, game: Game, 
+                     opponent_secret: str, own_secret: str, opponent_id: int, 
+                     bot: Bot, state: FSMContext):
+    """G'alabani qayta ishlash."""
+    game.is_finished = True
+    
+    attempts = game.attempts[player.user_id]
+    
+    # Coin va rating hisoblash
+    base_coins = 50
+    rating_change = 25
+    
+    if game.mode == GameMode.VS_PLAYER and opponent_id:
+        opponent = db.get_player(opponent_id)
+        rating_change = calculate_rating_change(player.rating, opponent.rating)
+        opponent.rating = max(0, opponent.rating - rating_change)
+        opponent.current_streak = 0
+        db.save_player(opponent)
+    
+    # Bonus hisoblash
+    speed_bonus = max(0, (10 - attempts) * 10) if attempts <= 10 else 0
+    difficulty_bonus = game.difficulty.value * 20
+    
+    total_coins = base_coins + speed_bonus + difficulty_bonus
+    
+    # Streak
+    player.current_streak += 1
+    player.best_streak = max(player.best_streak, player.current_streak)
+    streak_bonus_coins = player.current_streak * 10
+    total_coins += streak_bonus_coins
+    
+    # Statistika yangilash
+    player.coins += total_coins
+    player.rating += rating_change
+    player.games_played += 1
+    player.games_won += 1
+    player.total_attempts += attempts
+    player.hints_used += game.hints_used.get(player.user_id, 0)
+    
+    # Achievements tekshirish
+    new_achievements = check_achievements(player, game, attempts)
+    achievement_text = ""
+    
+    for ach in new_achievements:
+        player.achievements.append(ach.value[0])
+        player.coins += ach.value[2]
+        achievement_text += f"\n🏅 {ach.value[1]} (+{ach.value[2]} coin)"
+    
+    db.save_player(player)
+    
+    streak_text = f"🔥 Streak bonus: +{streak_bonus_coins} coin" if player.current_streak > 1 else ""
+    
+    await message.answer(
+        get_text(
+            player, "win",
+            attempts=attempts,
+            secret=opponent_secret,
+            coins=total_coins,
+            rating=rating_change,
+            streak_bonus=streak_text,
+            achievements=achievement_text
+        ),
+        reply_markup=get_main_menu_keyboard(player),
+        parse_mode="HTML"
+    )
+    
+    # Raqibga xabar
+    if opponent_id and opponent_id != 0:
+        opponent = db.get_player(opponent_id)
+        opponent.games_played += 1
+        db.save_player(opponent)
+        
+        await bot.send_message(
             opponent_id,
-            get_msg(opponent_id, "your_turn"),
-            reply_markup=get_game_controls(opponent_id)
+            get_text(opponent, "lose", secret=own_secret, rating=rating_change),
+            reply_markup=get_main_menu_keyboard(opponent),
+            parse_mode="HTML"
+        )
+    
+    await state.set_state(GameStates.main_menu)
+
+async def handle_loss(message: Message, player: PlayerStats, game: Game,
+                      player_secret: str, bot_secret: str, bot_obj: Bot, state: FSMContext):
+    """Mag'lubiyatni qayta ishlash."""
+    game.is_finished = True
+    
+    rating_change = 15
+    
+    player.rating = max(0, player.rating - rating_change)
+    player.current_streak = 0
+    player.games_played += 1
+    db.save_player(player)
+    
+    await message.answer(
+        get_text(player, "lose", secret=bot_secret, rating=rating_change),
+        reply_markup=get_main_menu_keyboard(player),
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(GameStates.main_menu)
+
+def check_achievements(player: PlayerStats, game: Game, attempts: int) -> List[Achievement]:
+    """Yutuqlarni tekshirish."""
+    new_achievements = []
+    
+    if Achievement.FIRST_WIN.value[0] not in player.achievements:
+        if player.games_won == 0:  # Bu birinchi g'alaba
+            new_achievements.append(Achievement.FIRST_WIN)
+    
+    if Achievement.SPEED_DEMON.value[0] not in player.achievements:
+        if attempts <= 3:
+            new_achievements.append(Achievement.SPEED_DEMON)
+    
+    if Achievement.STREAK_3.value[0] not in player.achievements:
+        if player.current_streak + 1 >= 3:
+            new_achievements.append(Achievement.STREAK_3)
+    
+    if Achievement.STREAK_5.value[0] not in player.achievements:
+        if player.current_streak + 1 >= 5:
+            new_achievements.append(Achievement.STREAK_5)
+    
+    if Achievement.STREAK_10.value[0] not in player.achievements:
+        if player.current_streak + 1 >= 10:
+            new_achievements.append(Achievement.STREAK_10)
+    
+    if Achievement.BOT_SLAYER.value[0] not in player.achievements:
+        if game.mode == GameMode.VS_BOT:
+            new_achievements.append(Achievement.BOT_SLAYER)
+    
+    if Achievement.HARD_MODE.value[0] not in player.achievements:
+        if game.difficulty in [Difficulty.HARD, Difficulty.EXTREME]:
+            new_achievements.append(Achievement.HARD_MODE)
+    
+    if Achievement.PLAYED_100.value[0] not in player.achievements:
+        if player.games_played + 1 >= 100:
+            new_achievements.append(Achievement.PLAYED_100)
+    
+    if Achievement.MASTER.value[0] not in player.achievements:
+        if player.rating >= 2000:
+            new_achievements.append(Achievement.MASTER)
+    
+    return new_achievements
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "hint")
+async def use_hint(callback: CallbackQuery, state: FSMContext):
+    """Hint ishlatish."""
+    player = db.get_player(callback.from_user.id)
+    data = await state.get_data()
+    game = db.get_game(data.get("game_id"))
+    
+    if not game or game.turn != player.user_id:
+        await callback.answer(get_text(player, "not_your_turn"), show_alert=True)
+        return
+    
+    cost = get_hint_cost(game.difficulty)
+    max_hints = get_max_hints(game.difficulty)
+    used = game.hints_used.get(player.user_id, 0)
+    
+    if used >= max_hints:
+        await callback.answer(get_text(player, "no_hints_left"), show_alert=True)
+        return
+    
+    if player.coins < cost:
+        await callback.answer(get_text(player, "not_enough_coins", cost=cost), show_alert=True)
+        return
+    
+    # Hint berish
+    player.coins -= cost
+    game.hints_used[player.user_id] = used + 1
+    db.save_player(player)
+    
+    # Tasodifiy pozitsiyani ochish
+    if player.user_id == game.player1_id:
+        secret = game.secret2
+    else:
+        secret = game.secret1
+    
+    # Hali ochilmagan pozitsiyani topish
+    revealed = data.get("revealed_positions", [])
+    available = [i for i in range(len(secret)) if i not in revealed]
+    
+    if not available:
+        await callback.answer(get_text(player, "no_hints_left"), show_alert=True)
+        return
+    
+    pos = random.choice(available)
+    revealed.append(pos)
+    await state.update_data(revealed_positions=revealed)
+    
+    await callback.answer()
+    await callback.message.answer(
+        get_text(
+            player, "hint_used",
+            position=pos + 1,
+            digit=secret[pos],
+            cost=cost,
+            remaining=max_hints - used - 1
+        ),
+        parse_mode="HTML"
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SURRENDER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "surrender")
+async def surrender_confirm(callback: CallbackQuery, state: FSMContext):
+    """Taslim bo'lish tasdiqlash."""
+    player = db.get_player(callback.from_user.id)
+    await callback.answer()
+    await callback.message.edit_text(
+        get_text(player, "surrender_confirm"),
+        reply_markup=get_confirm_keyboard(player)
+    )
+
+@router.callback_query(F.data == "confirm:yes")
+async def surrender_yes(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Taslim bo'lish."""
+    player = db.get_player(callback.from_user.id)
+    data = await state.get_data()
+    game = db.get_game(data.get("game_id"))
+    
+    if game:
+        game.is_finished = True
+        
+        player.current_streak = 0
+        player.rating = max(0, player.rating - 20)
+        player.games_played += 1
+        db.save_player(player)
+        
+        # Raqibga xabar
+        opponent_id = game.player2_id if game.player1_id == player.user_id else game.player1_id
+        if opponent_id and opponent_id != 0:
+            opponent = db.get_player(opponent_id)
+            opponent.games_won += 1
+            opponent.games_played += 1
+            opponent.current_streak += 1
+            opponent.rating += 20
+            opponent.coins += 30
+            db.save_player(opponent)
+            
+            await bot.send_message(
+                opponent_id,
+                get_text(opponent, "opponent_surrendered"),
+                reply_markup=get_main_menu_keyboard(opponent),
+                parse_mode="HTML"
+            )
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        get_text(player, "surrendered"),
+        reply_markup=get_main_menu_keyboard(player),
+        parse_mode="HTML"
+    )
+    await state.set_state(GameStates.main_menu)
+
+@router.callback_query(F.data == "confirm:no")
+async def surrender_no(callback: CallbackQuery, state: FSMContext):
+    """Taslim bo'lishni bekor qilish."""
+    player = db.get_player(callback.from_user.id)
+    data = await state.get_data()
+    game = db.get_game(data.get("game_id"))
+    
+    await callback.answer()
+    
+    if game and game.turn == player.user_id:
+        await callback.message.edit_text(
+            get_text(player, "your_turn", time=game.time_limit, hints=get_max_hints(game.difficulty) - game.hints_used.get(player.user_id, 0)),
+            reply_markup=get_game_keyboard(player, game),
+            parse_mode="HTML"
+        )
+    else:
+        await callback.message.edit_text(
+            get_text(player, "opponent_turn"),
+            parse_mode="HTML"
         )
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LEADERBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "leaderboard")
+async def show_leaderboard(callback: CallbackQuery):
+    """Leaderboard ko'rsatish."""
+    player = db.get_player(callback.from_user.id)
+    top_players = db.get_leaderboard(10)
+    
+    text = ""
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for i, p in enumerate(top_players):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        name = p.first_name[:15] + "..." if len(p.first_name) > 15 else p.first_name
+        you = " ← Siz" if p.user_id == player.user_id else ""
+        text += f"{medal} <b>{name}</b> - {p.rating} 🏆{you}\n"
+    
+    if not text:
+        text = "Hali o'yinchilar yo'q!"
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        get_text(player, "leaderboard", players=text),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:main")]
+        ]),
+        parse_mode="HTML"
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROFILE & STATS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "profile")
+async def show_profile(callback: CallbackQuery):
+    """Profil ko'rsatish."""
+    player = db.get_player(callback.from_user.id)
+    
+    text = get_text(
+        player, "profile",
+        name=player.first_name,
+        user_id=player.user_id,
+        rating=player.rating,
+        coins=player.coins,
+        streak=player.current_streak,
+        games=player.games_played,
+        wins=player.games_won,
+        win_rate=player.win_rate,
+        achievement_count=len(player.achievements),
+        total_achievements=len(Achievement)
+    )
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:main")]
+        ]),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data == "stats")
+async def show_stats(callback: CallbackQuery):
+    """Statistika ko'rsatish."""
+    player = db.get_player(callback.from_user.id)
+    
+    achievements_text = ", ".join([
+        next((a.value[1] for a in Achievement if a.value[0] == ach), ach)
+        for ach in player.achievements
+    ]) or "Hali yo'q"
+    
+    text = get_text(
+        player, "stats",
+        games=player.games_played,
+        wins=player.games_won,
+        win_rate=player.win_rate,
+        best_streak=player.best_streak,
+        avg_attempts=player.avg_attempts,
+        hints=player.hints_used,
+        achievements=achievements_text
+    )
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:main")]
+        ]),
+        parse_mode="HTML"
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DAILY BONUS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "daily")
+async def claim_daily(callback: CallbackQuery):
+    """Kunlik bonus olish."""
+    player = db.get_player(callback.from_user.id)
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if player.last_daily == today:
+        await callback.answer(get_text(player, "daily_claimed"), show_alert=True)
+        return
+    
+    # Streak hisoblash
+    if player.last_daily:
+        last = datetime.strptime(player.last_daily, "%Y-%m-%d")
+        if (datetime.now() - last).days == 1:
+            daily_streak = 1  # Ketma-ket
+        else:
+            daily_streak = 1
+    else:
+        daily_streak = 1
+    
+    # Bonus
+    bonus = 50 + (daily_streak * 10)
+    player.coins += bonus
+    player.last_daily = today
+    db.save_player(player)
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        get_text(player, "daily_bonus", coins=bonus, streak=daily_streak),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:main")]
+        ]),
+        parse_mode="HTML"
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SETTINGS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "settings")
+async def show_settings(callback: CallbackQuery):
+    """Sozlamalar."""
+    player = db.get_player(callback.from_user.id)
+    
+    keyboard = [[InlineKeyboardButton(text=name, callback_data=f"setlang:{code}")]
+                for code, name in LANGUAGES.items()]
+    keyboard.append([InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:main")])
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        get_text(player, "choose_language"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(F.data.startswith("setlang:"))
+async def change_language(callback: CallbackQuery, state: FSMContext):
+    """Tilni o'zgartirish."""
+    lang_code = callback.data.split(":")[1]
+    player = db.get_player(callback.from_user.id)
+    player.language = lang_code
+    db.save_player(player)
+    
+    await callback.answer(f"✅ {LANGUAGES[lang_code]}")
+    await show_main_menu(callback.message, player, state, edit=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SHOP (Placeholder)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "shop")
+async def show_shop(callback: CallbackQuery):
+    """Do'kon."""
+    player = db.get_player(callback.from_user.id)
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        get_text(player, "shop", coins=player.coins) + "\n\n🚧 Tez kunda...",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_button(player, "back"), callback_data="back:main")]
+        ]),
+        parse_mode="HTML"
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main() -> None:
+async def main():
     """Botni ishga tushirish."""
-    TOKEN = os.getenv("BOT_TOKEN", "7701613822:AAFEOPYnLokpQpF-mu73edLbH5e7PINiLMo")
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher(storage=MemoryStorage())
     
-    app = ApplicationBuilder().token(TOKEN).build()
+    dp.include_router(router)
     
-    # Komanda handlerlari
-    app.add_handler(CommandHandler("start", start_handler))
+    logger.info("🤖 Bot ishga tushdi!")
     
-    # Callback handlerlari
-    app.add_handler(CallbackQueryHandler(set_language_handler, pattern=r"^lang_"))
-    app.add_handler(CallbackQueryHandler(change_language_handler, pattern=r"^setlang_"))
-    app.add_handler(CallbackQueryHandler(check_subscription_handler, pattern=r"^check_subscription$"))
-    app.add_handler(CallbackQueryHandler(new_game_handler, pattern=r"^new_game$"))
-    app.add_handler(CallbackQueryHandler(settings_handler, pattern=r"^settings$"))
-    app.add_handler(CallbackQueryHandler(game_rules_handler, pattern=r"^game_rules$"))
-    app.add_handler(CallbackQueryHandler(back_to_menu_handler, pattern=r"^back_to_menu$"))
-    app.add_handler(CallbackQueryHandler(finish_game_handler, pattern=r"^finish_game$"))
-    app.add_handler(CallbackQueryHandler(send_message_handler, pattern=r"^send_message$"))
-    app.add_handler(CallbackQueryHandler(cancel_send_handler, pattern=r"^cancel_send$"))
-    app.add_handler(CallbackQueryHandler(surrender_yes_handler, pattern=r"^surrender_yes$"))
-    app.add_handler(CallbackQueryHandler(surrender_no_handler, pattern=r"^surrender_no$"))
-    
-    # Matn handleri
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("Bot ishga tushdi...")
-    app.run_polling(drop_pending_updates=True)
-
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
