@@ -19,6 +19,7 @@ Xususiyatlar:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
+
 import asyncio
 import logging
 import random
@@ -29,12 +30,13 @@ from enum import Enum
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiogram import Bot, Dispatcher, Router, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,14 +47,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bot sozlamalari
+# Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7701613822:AAFEOPYnLokpQpF-mu73edLbH5e7PINiLMo")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@samancikschannel")
-
-# MongoDB sozlamalari
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 DB_NAME = os.getenv("DB_NAME", "bulls_cows_bot")
 
+logger.info(f"🔧 Bot Token: {BOT_TOKEN[:20]}...")
+logger.info(f"🔧 MongoDB URI: {MONGODB_URI[:30]}...")
+logger.info(f"🔧 Database: {DB_NAME}")
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS & ENUMS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -91,171 +94,57 @@ ACHIEVEMENTS = {
 # MESSAGES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+LANGUAGES = {
+    "uz": "🇺🇿 O'zbek",
+    "ru": "🇷🇺 Русский",
+    "en": "🇺🇸 English",
+    "kk": "🇰🇿 Qaraqalpaq"
+}
+
+ACHIEVEMENTS = {
+    "first_win": {"name_uz": "🏆 Birinchi g'alaba", "name_ru": "🏆 Первая победа", "name_en": "🏆 First Win", "coins": 100},
+    "speed_3": {"name_uz": "⚡ Tezkor (3 ta)", "name_ru": "⚡ Скорость (3)", "name_en": "⚡ Speed (3)", "coins": 200},
+    "streak_3": {"name_uz": "🔥 Seriya 3", "name_ru": "🔥 Серия 3", "name_en": "🔥 Streak 3", "coins": 150},
+    "streak_5": {"name_uz": "🔥🔥 Seriya 5", "name_ru": "🔥🔥 Серия 5", "name_en": "🔥🔥 Streak 5", "coins": 300},
+    "bot_killer": {"name_uz": "🤖 Bot o'ldirgich", "name_ru": "🤖 Убийца ботов", "name_en": "🤖 Bot Killer", "coins": 100},
+}
+
 MESSAGES = {
     "uz": {
         "choose_language": "🌍 Tilni tanlang:",
         "subscribe": "📢 Botdan foydalanish uchun kanalga a'zo bo'ling:",
         "not_subscribed": "❌ Siz hali kanalga a'zo emassiz!",
         "subscribed": "✅ Tabriklaymiz! Endi botdan foydalanishingiz mumkin.",
-        "main_menu": """
-🏠 <b>Asosiy Menyu</b>
-
-👤 {name}
-💰 Coins: <b>{coins}</b>
-🏆 Rating: <b>{rating}</b>
-🔥 Streak: <b>{streak}</b>
-📊 O'yinlar: <b>{wins}/{games}</b> ({win_rate:.1f}%)
-""",
-        "choose_mode": """
-🎮 <b>O'yin turini tanlang:</b>
-
-🤖 <b>Bot bilan</b> - sun'iy intellekt bilan o'ynash
-👥 <b>Do'st bilan</b> - havolani ulashing
-""",
-        "choose_difficulty": """
-📊 <b>Qiyinlik darajasini tanlang:</b>
-
-🟢 <b>Oson</b> - 3 xonali raqam
-🟡 <b>O'rtacha</b> - 4 xonali raqam
-🔴 <b>Qiyin</b> - 5 xonali raqam
-⚫ <b>Ekstremal</b> - 6 xonali raqam
-""",
-        "game_created": """
-✅ <b>O'yin yaratildi!</b>
-
-🔗 Do'stingizga bu havolani yuboring:
-{invite_link}
-
-⏳ Raqib kutilmoqda...
-""",
-        "game_started": """
-🎮 <b>O'yin boshlandi!</b>
-
-👤 Raqib: <b>{opponent}</b>
-📊 Qiyinlik: <b>{difficulty}</b> xonali
-
-🔢 Maxfiy raqamingizni kiriting:
-(Raqamlar takrorlanmasin!)
-""",
+        "main_menu": "🏠 <b>Asosiy Menyu</b>\n\n👤 {name}\n💰 Coins: <b>{coins}</b>\n🏆 Rating: <b>{rating}</b>\n🔥 Streak: <b>{streak}</b>\n📊 O'yinlar: <b>{wins}/{games}</b> ({win_rate:.1f}%)",
+        "choose_mode": "🎮 <b>O'yin turini tanlang:</b>\n\n🤖 <b>Bot bilan</b> - sun'iy intellekt bilan\n👥 <b>Do'st bilan</b> - havolani ulashing",
+        "choose_difficulty": "📊 <b>Qiyinlik darajasini tanlang:</b>\n\n🟢 <b>Oson</b> - 3 xonali\n🟡 <b>O'rtacha</b> - 4 xonali\n🔴 <b>Qiyin</b> - 5 xonali\n⚫ <b>Ekstremal</b> - 6 xonali",
+        "game_created": "✅ <b>O'yin yaratildi!</b>\n\n🔗 Havolani do'stingizga yuboring:\n{invite_link}\n\n⏳ Raqib kutilmoqda...",
+        "game_started": "🎮 <b>O'yin boshlandi!</b>\n\n👤 Raqib: <b>{opponent}</b>\n📊 Qiyinlik: <b>{difficulty}</b> xonali\n\n🔢 Maxfiy raqamingizni kiriting (takrorlanmasin!):",
         "secret_set": "✅ Maxfiy raqamingiz saqlandi! Raqibingizni kuting...",
-        "both_ready": "✅ Ikkala o'yinchi ham tayyor! O'yin boshlandi!",
-        "your_turn": """
-🎯 <b>Sizning navbatingiz!</b>
-
-💡 Hintlar: {hints} ta qoldi
-🔄 Urinishlar: {attempts}
-
-Taxminingizni yuboring:
-""",
+        "your_turn": "🎯 <b>Sizning navbatingiz!</b>\n\n💡 Hintlar: {hints} ta\n🔄 Urinishlar: {attempts}\n\nTaxminingizni yuboring:",
         "opponent_turn": "⏳ Raqibingizning navbati. Kuting...",
-        "result": """
-📊 <b>Natija:</b> <code>{guess}</code>
-
-🎯 {bulls} Bull | 🐄 {cows} Cow
-🔄 Urinish: {attempts}
-""",
-        "win": """
-🎉🎉🎉 <b>TABRIKLAYMIZ!</b> 🎉🎉🎉
-
-Siz <b>{attempts}</b> urinishda g'olib bo'ldingiz!
-🎯 Raqibning maxfiy raqami: <code>{secret}</code>
-
-💰 +{coins} coins
-🏆 +{rating} rating
-{streak_msg}
-{achievements}
-""",
-        "lose": """
-😔 <b>Afsuski, yutqazdingiz!</b>
-
-🎯 Raqibning maxfiy raqami: <code>{secret}</code>
-🏆 -{rating} rating
-""",
-        "hint_used": """
-💡 <b>Maslahat:</b>
-
-Pozitsiya <b>{position}</b>: raqam <b>{digit}</b>
-
-💰 -{cost} coins
-💡 Qolgan: {remaining} ta
-""",
-        "not_enough_coins": "❌ Sizda yetarli coin yo'q! Kerak: {cost}",
-        "invalid_number": "❌ Noto'g'ri format! {length} xonali raqam kiriting (takrorlanmasin).",
+        "result": "📊 <b>Natija:</b> <code>{guess}</code>\n\n🎯 {bulls} Bull | 🐄 {cows} Cow\n🔄 Urinish: {attempts}",
+        "win": "🎉 <b>TABRIKLAYMIZ!</b> 🎉\n\nSiz <b>{attempts}</b> urinishda g'olib bo'ldingiz!\n🎯 Maxfiy: <code>{secret}</code>\n\n💰 +{coins} coins\n🏆 +{rating} rating\n{streak_msg}\n{achievements}",
+        "lose": "😔 <b>Afsuski, yutqazdingiz!</b>\n\n🎯 Maxfiy: <code>{secret}</code>\n🏆 -{rating} rating",
+        "invalid_number": "❌ Noto'g'ri! {length} xonali raqam kiriting (takrorlanmasin).",
         "not_your_turn": "❌ Sizning navbatingiz emas!",
-        "surrender_confirm": "🏳️ Haqiqatan ham taslim bo'lmoqchimisiz?",
+        "surrender_confirm": "🏳️ Taslim bo'lmoqchimisiz?",
         "surrendered": "🏳️ Siz taslim bo'ldingiz.",
-        "opponent_surrendered": "🎉 Raqibingiz taslim bo'ldi! Siz g'olib bo'ldingiz!",
-        "leaderboard": """
-🏆 <b>TOP O'YINCHILAR</b>
-
-{players}
-
-Sizning o'rningiz: <b>#{rank}</b>
-""",
-        "profile": """
-👤 <b>Profil: {name}</b>
-
-🆔 ID: <code>{user_id}</code>
-🏆 Rating: {rating} (#{rank})
-💰 Coins: {coins}
-🔥 Streak: {streak} (Eng yaxshi: {best_streak})
-
-📊 <b>Statistika:</b>
-🎮 O'yinlar: {games}
-🏆 G'alabalar: {wins}
-📈 G'alaba foizi: {win_rate:.1f}%
-📊 O'rtacha urinish: {avg_attempts:.1f}
-
-🏅 Yutuqlar: {achievement_count}/{total_achievements}
-""",
-        "stats": """
-📊 <b>Batafsil statistika</b>
-
-🎮 Jami o'yinlar: {games}
-🏆 G'alabalar: {wins}
-😔 Mag'lubiyatlar: {losses}
-📈 G'alaba foizi: {win_rate:.1f}%
-
-🔥 Hozirgi streak: {current_streak}
-🏆 Eng yaxshi streak: {best_streak}
-
-📊 O'rtacha urinish: {avg_attempts:.1f}
-💡 Ishlatilgan hintlar: {hints_used}
-
-🤖 Bot bilan: {vs_bot_games}
-👥 Do'st bilan: {vs_player_games}
-""",
-        "daily_bonus": """
-🎁 <b>Kunlik bonus!</b>
-
-Siz <b>{coins}</b> coin oldingiz!
-🔥 Kunlik streak: {streak} kun
-
-Ertaga yana qaytib keling! 🎉
-""",
-        "daily_already": "❌ Siz bugun bonusni oldingiz!\n\nKeyingi bonus: {next_time}",
-        "achievement_unlocked": """
-🏅 <b>YANGI YUTUQ!</b>
-
-{name}
-
-💰 +{coins} coins
-""",
+        "opponent_surrendered": "🎉 Raqibingiz taslim bo'ldi! Siz g'olib!",
         "game_not_found": "❌ O'yin topilmadi!",
         "already_in_game": "❌ Siz allaqachon o'yindasiz!",
-        "cannot_play_self": "❌ O'zingiz bilan o'ynay olmaysiz!",
-        "game_already_started": "❌ Bu o'yin allaqachon boshlangan!",
+        "leaderboard": "🏆 <b>TOP O'YINCHILAR</b>\n\n{players}\n\nSizning o'rningiz: <b>#{rank}</b>",
+        "profile": "👤 <b>{name}</b>\n\n🆔 ID: <code>{user_id}</code>\n🏆 Rating: {rating} (#{rank})\n💰 Coins: {coins}\n🔥 Streak: {streak}\n\n📊 O'yinlar: {games}\n🏆 G'alabalar: {wins}\n📈 Foiz: {win_rate:.1f}%\n\n🏅 Yutuqlar: {achievement_count}/{total_achievements}",
+        "daily_bonus": "🎁 <b>Kunlik bonus!</b>\n\nSiz <b>{coins}</b> coin oldingiz!\n🔥 Streak: {streak} kun",
+        "daily_already": "❌ Bugun bonusni oldingiz!\n\nKeyingi: {next_time}",
         
-        # Buttons
         "btn_new_game": "🎮 Yangi o'yin",
         "btn_vs_bot": "🤖 Bot bilan",
         "btn_vs_player": "👥 Do'st bilan",
         "btn_leaderboard": "🏆 Reytinglar",
         "btn_profile": "👤 Profil",
-        "btn_stats": "📊 Statistika",
-        "btn_daily": "🎁 Kunlik bonus",
+        "btn_daily": "🎁 Bonus",
         "btn_settings": "⚙️ Sozlamalar",
-        "btn_hint": "💡 Hint ({cost} coin)",
         "btn_surrender": "🏳️ Taslim",
         "btn_back": "🔙 Orqaga",
         "btn_yes": "✅ Ha",
@@ -269,156 +158,44 @@ Ertaga yana qaytib keling! 🎉
     },
     "ru": {
         "choose_language": "🌍 Выберите язык:",
-        "subscribe": "📢 Подпишитесь на канал для использования бота:",
-        "not_subscribed": "❌ Вы еще не подписаны на канал!",
-        "subscribed": "✅ Поздравляем! Теперь вы можете пользоваться ботом.",
-        "main_menu": """
-🏠 <b>Главное меню</b>
-
-👤 {name}
-💰 Монеты: <b>{coins}</b>
-🏆 Рейтинг: <b>{rating}</b>
-🔥 Серия: <b>{streak}</b>
-📊 Игры: <b>{wins}/{games}</b> ({win_rate:.1f}%)
-""",
-        "choose_mode": """
-🎮 <b>Выберите режим игры:</b>
-
-🤖 <b>Против бота</b> - играть с ИИ
-👥 <b>С другом</b> - отправьте ссылку
-""",
-        "choose_difficulty": """
-📊 <b>Выберите сложность:</b>
-
-🟢 <b>Легко</b> - 3-значное число
-🟡 <b>Средне</b> - 4-значное число
-🔴 <b>Сложно</b> - 5-значное число
-⚫ <b>Экстрим</b> - 6-значное число
-""",
-        "game_created": """
-✅ <b>Игра создана!</b>
-
-🔗 Отправьте другу эту ссылку:
-{invite_link}
-
-⏳ Ожидание противника...
-""",
-        "game_started": """
-🎮 <b>Игра началась!</b>
-
-👤 Противник: <b>{opponent}</b>
-📊 Сложность: <b>{difficulty}</b>-значное
-
-🔢 Введите ваше секретное число:
-(Цифры не должны повторяться!)
-""",
-        "secret_set": "✅ Ваше секретное число сохранено! Ожидайте противника...",
-        "both_ready": "✅ Оба игрока готовы! Игра началась!",
-        "your_turn": """
-🎯 <b>Ваш ход!</b>
-
-💡 Подсказок: {hints}
-🔄 Попыток: {attempts}
-
-Введите вашу догадку:
-""",
-        "opponent_turn": "⏳ Ход противника. Ожидайте...",
-        "result": """
-📊 <b>Результат:</b> <code>{guess}</code>
-
-🎯 {bulls} Bull | 🐄 {cows} Cow
-🔄 Попытка: {attempts}
-""",
-        "win": """
-🎉🎉🎉 <b>ПОЗДРАВЛЯЕМ!</b> 🎉🎉🎉
-
-Вы выиграли за <b>{attempts}</b> попыток!
-🎯 Секрет противника: <code>{secret}</code>
-
-💰 +{coins} монет
-🏆 +{rating} рейтинга
-{streak_msg}
-{achievements}
-""",
-        "lose": """
-😔 <b>К сожалению, вы проиграли!</b>
-
-🎯 Секрет противника: <code>{secret}</code>
-🏆 -{rating} рейтинга
-""",
-        "hint_used": """
-💡 <b>Подсказка:</b>
-
-Позиция <b>{position}</b>: цифра <b>{digit}</b>
-
-💰 -{cost} монет
-💡 Осталось: {remaining}
-""",
-        "not_enough_coins": "❌ Недостаточно монет! Нужно: {cost}",
-        "invalid_number": "❌ Неверный формат! Введите {length}-значное число без повторов.",
-        "not_your_turn": "❌ Сейчас не ваш ход!",
-        "surrender_confirm": "🏳️ Вы уверены, что хотите сдаться?",
+        "subscribe": "📢 Подпишитесь на канал:",
+        "not_subscribed": "❌ Вы не подписаны!",
+        "subscribed": "✅ Отлично! Теперь можете пользоваться ботом.",
+        "main_menu": "🏠 <b>Главное меню</b>\n\n👤 {name}\n💰 Монеты: <b>{coins}</b>\n🏆 Рейтинг: <b>{rating}</b>\n🔥 Серия: <b>{streak}</b>\n📊 Игры: <b>{wins}/{games}</b> ({win_rate:.1f}%)",
+        "choose_mode": "🎮 <b>Выберите режим:</b>\n\n🤖 <b>Против бота</b>\n👥 <b>С другом</b>",
+        "choose_difficulty": "📊 <b>Сложность:</b>\n\n🟢 <b>Легко</b> - 3 цифры\n🟡 <b>Средне</b> - 4 цифры\n🔴 <b>Сложно</b> - 5 цифр\n⚫ <b>Экстрим</b> - 6 цифр",
+        "game_created": "✅ <b>Игра создана!</b>\n\n🔗 Отправьте ссылку другу:\n{invite_link}\n\n⏳ Ожидание...",
+        "game_started": "🎮 <b>Игра началась!</b>\n\n👤 Противник: <b>{opponent}</b>\n📊 Сложность: <b>{difficulty}</b>\n\n🔢 Введите секретное число:",
+        "secret_set": "✅ Число сохранено! Ожидайте...",
+        "your_turn": "🎯 <b>Ваш ход!</b>\n\n💡 Подсказок: {hints}\n🔄 Попыток: {attempts}\n\nВаша догадка:",
+        "opponent_turn": "⏳ Ход противника...",
+        "result": "📊 <b>Результат:</b> <code>{guess}</code>\n\n🎯 {bulls} Bull | 🐄 {cows} Cow\n🔄 Попытка: {attempts}",
+        "win": "🎉 <b>ПОЗДРАВЛЯЕМ!</b> 🎉\n\nВы выиграли за <b>{attempts}</b> попыток!\n🎯 Секрет: <code>{secret}</code>\n\n💰 +{coins} монет\n🏆 +{rating} рейтинга\n{streak_msg}\n{achievements}",
+        "lose": "😔 <b>Вы проиграли!</b>\n\n🎯 Секрет: <code>{secret}</code>\n🏆 -{rating} рейтинга",
+        "invalid_number": "❌ Неверно! Введите {length}-значное число без повторов.",
+        "not_your_turn": "❌ Не ваш ход!",
+        "surrender_confirm": "🏳️ Сдаться?",
         "surrendered": "🏳️ Вы сдались.",
-        "opponent_surrendered": "🎉 Противник сдался! Вы победили!",
-        "leaderboard": """
-🏆 <b>ТОП ИГРОКОВ</b>
-
-{players}
-
-Ваше место: <b>#{rank}</b>
-""",
-        "profile": """
-👤 <b>Профиль: {name}</b>
-
-🆔 ID: <code>{user_id}</code>
-🏆 Рейтинг: {rating} (#{rank})
-💰 Монеты: {coins}
-🔥 Серия: {streak} (Лучшая: {best_streak})
-
-📊 <b>Статистика:</b>
-🎮 Игры: {games}
-🏆 Победы: {wins}
-📈 % побед: {win_rate:.1f}%
-📊 Средн. попыток: {avg_attempts:.1f}
-
-🏅 Достижения: {achievement_count}/{total_achievements}
-""",
-        "daily_bonus": """
-🎁 <b>Ежедневный бонус!</b>
-
-Вы получили <b>{coins}</b> монет!
-🔥 Дневная серия: {streak} дней
-
-Возвращайтесь завтра! 🎉
-""",
-        "daily_already": "❌ Вы уже получили бонус сегодня!\n\nСледующий бонус: {next_time}",
-        "achievement_unlocked": """
-🏅 <b>НОВОЕ ДОСТИЖЕНИЕ!</b>
-
-{name}
-
-💰 +{coins} монет
-""",
+        "opponent_surrendered": "🎉 Противник сдался! Победа!",
         "game_not_found": "❌ Игра не найдена!",
         "already_in_game": "❌ Вы уже в игре!",
-        "cannot_play_self": "❌ Нельзя играть с самим собой!",
-        "game_already_started": "❌ Эта игра уже началась!",
+        "leaderboard": "🏆 <b>ТОП ИГРОКОВ</b>\n\n{players}\n\nВаше место: <b>#{rank}</b>",
+        "profile": "👤 <b>{name}</b>\n\n🆔 ID: <code>{user_id}</code>\n🏆 Рейтинг: {rating} (#{rank})\n💰 Монеты: {coins}\n🔥 Серия: {streak}\n\n📊 Игры: {games}\n🏆 Победы: {wins}\n📈 %: {win_rate:.1f}%\n\n🏅 Достижения: {achievement_count}/{total_achievements}",
+        "daily_bonus": "🎁 <b>Ежедневный бонус!</b>\n\nВы получили <b>{coins}</b> монет!\n🔥 Серия: {streak} дней",
+        "daily_already": "❌ Вы уже получили бонус!\n\nСледующий: {next_time}",
         
-        # Buttons
         "btn_new_game": "🎮 Новая игра",
         "btn_vs_bot": "🤖 Против бота",
         "btn_vs_player": "👥 С другом",
         "btn_leaderboard": "🏆 Рейтинг",
         "btn_profile": "👤 Профиль",
-        "btn_stats": "📊 Статистика",
-        "btn_daily": "🎁 Ежедневный бонус",
+        "btn_daily": "🎁 Бонус",
         "btn_settings": "⚙️ Настройки",
-        "btn_hint": "💡 Подсказка ({cost} монет)",
         "btn_surrender": "🏳️ Сдаться",
         "btn_back": "🔙 Назад",
         "btn_yes": "✅ Да",
         "btn_no": "❌ Нет",
-        "btn_subscribe": "📢 Перейти на канал",
+        "btn_subscribe": "📢 Перейти",
         "btn_check": "✅ Проверить",
         "btn_easy": "🟢 Легко (3)",
         "btn_medium": "🟡 Средне (4)",
@@ -427,196 +204,51 @@ Ertaga yana qaytib keling! 🎉
     },
     "en": {
         "choose_language": "🌍 Choose a language:",
-        "subscribe": "📢 Please subscribe to the channel:",
-        "not_subscribed": "❌ You haven't subscribed yet!",
-        "subscribed": "✅ Congratulations! You can now use the bot.",
-        "main_menu": """
-🏠 <b>Main Menu</b>
-
-👤 {name}
-💰 Coins: <b>{coins}</b>
-🏆 Rating: <b>{rating}</b>
-🔥 Streak: <b>{streak}</b>
-📊 Games: <b>{wins}/{games}</b> ({win_rate:.1f}%)
-""",
-        "choose_mode": """
-🎮 <b>Choose game mode:</b>
-
-🤖 <b>vs Bot</b> - play against AI
-👥 <b>vs Friend</b> - share the link
-""",
-        "choose_difficulty": """
-📊 <b>Choose difficulty:</b>
-
-🟢 <b>Easy</b> - 3 digits
-🟡 <b>Medium</b> - 4 digits
-🔴 <b>Hard</b> - 5 digits
-⚫ <b>Extreme</b> - 6 digits
-""",
-        "game_created": """
-✅ <b>Game created!</b>
-
-🔗 Send this link to your friend:
-{invite_link}
-
-⏳ Waiting for opponent...
-""",
-        "game_started": """
-🎮 <b>Game started!</b>
-
-👤 Opponent: <b>{opponent}</b>
-📊 Difficulty: <b>{difficulty}</b> digits
-
-🔢 Enter your secret number:
-(No repeating digits!)
-""",
-        "secret_set": "✅ Your secret number is saved! Waiting for opponent...",
-        "both_ready": "✅ Both players ready! Game started!",
-        "your_turn": """
-🎯 <b>Your turn!</b>
-
-💡 Hints left: {hints}
-🔄 Attempts: {attempts}
-
-Enter your guess:
-""",
-        "opponent_turn": "⏳ Opponent's turn. Please wait...",
-        "result": """
-📊 <b>Result:</b> <code>{guess}</code>
-
-🎯 {bulls} Bull | 🐄 {cows} Cow
-🔄 Attempt: {attempts}
-""",
-        "win": """
-🎉🎉🎉 <b>CONGRATULATIONS!</b> 🎉🎉🎉
-
-You won in <b>{attempts}</b> attempts!
-🎯 Opponent's secret: <code>{secret}</code>
-
-💰 +{coins} coins
-🏆 +{rating} rating
-{streak_msg}
-{achievements}
-""",
-        "lose": """
-😔 <b>Unfortunately, you lost!</b>
-
-🎯 Opponent's secret: <code>{secret}</code>
-🏆 -{rating} rating
-""",
-        "hint_used": """
-💡 <b>Hint:</b>
-
-Position <b>{position}</b>: digit <b>{digit}</b>
-
-💰 -{cost} coins
-💡 Remaining: {remaining}
-""",
-        "not_enough_coins": "❌ Not enough coins! Need: {cost}",
-        "invalid_number": "❌ Invalid format! Enter a {length}-digit number (no repeats).",
-        "not_your_turn": "❌ It's not your turn!",
-        "surrender_confirm": "🏳️ Are you sure you want to surrender?",
+        "subscribe": "📢 Subscribe to the channel:",
+        "not_subscribed": "❌ Not subscribed!",
+        "subscribed": "✅ Great! You can now use the bot.",
+        "main_menu": "🏠 <b>Main Menu</b>\n\n👤 {name}\n💰 Coins: <b>{coins}</b>\n🏆 Rating: <b>{rating}</b>\n🔥 Streak: <b>{streak}</b>\n📊 Games: <b>{wins}/{games}</b> ({win_rate:.1f}%)",
+        "choose_mode": "🎮 <b>Choose mode:</b>\n\n🤖 <b>vs Bot</b>\n👥 <b>vs Friend</b>",
+        "choose_difficulty": "📊 <b>Difficulty:</b>\n\n🟢 <b>Easy</b> - 3 digits\n🟡 <b>Medium</b> - 4 digits\n🔴 <b>Hard</b> - 5 digits\n⚫ <b>Extreme</b> - 6 digits",
+        "game_created": "✅ <b>Game created!</b>\n\n🔗 Send link to friend:\n{invite_link}\n\n⏳ Waiting...",
+        "game_started": "🎮 <b>Game started!</b>\n\n👤 Opponent: <b>{opponent}</b>\n📊 Difficulty: <b>{difficulty}</b>\n\n🔢 Enter secret number:",
+        "secret_set": "✅ Number saved! Wait...",
+        "your_turn": "🎯 <b>Your turn!</b>\n\n💡 Hints: {hints}\n🔄 Attempts: {attempts}\n\nYour guess:",
+        "opponent_turn": "⏳ Opponent's turn...",
+        "result": "📊 <b>Result:</b> <code>{guess}</code>\n\n🎯 {bulls} Bull | 🐄 {cows} Cow\n🔄 Attempt: {attempts}",
+        "win": "🎉 <b>CONGRATULATIONS!</b> 🎉\n\nYou won in <b>{attempts}</b> attempts!\n🎯 Secret: <code>{secret}</code>\n\n💰 +{coins} coins\n🏆 +{rating} rating\n{streak_msg}\n{achievements}",
+        "lose": "😔 <b>You lost!</b>\n\n🎯 Secret: <code>{secret}</code>\n🏆 -{rating} rating",
+        "invalid_number": "❌ Invalid! Enter {length}-digit number (no repeats).",
+        "not_your_turn": "❌ Not your turn!",
+        "surrender_confirm": "🏳️ Surrender?",
         "surrendered": "🏳️ You surrendered.",
-        "opponent_surrendered": "🎉 Opponent surrendered! You win!",
-        "leaderboard": """
-🏆 <b>TOP PLAYERS</b>
-
-{players}
-
-Your rank: <b>#{rank}</b>
-""",
-        "profile": """
-👤 <b>Profile: {name}</b>
-
-🆔 ID: <code>{user_id}</code>
-🏆 Rating: {rating} (#{rank})
-💰 Coins: {coins}
-🔥 Streak: {streak} (Best: {best_streak})
-
-📊 <b>Statistics:</b>
-🎮 Games: {games}
-🏆 Wins: {wins}
-📈 Win rate: {win_rate:.1f}%
-📊 Avg attempts: {avg_attempts:.1f}
-
-🏅 Achievements: {achievement_count}/{total_achievements}
-""",
-        "daily_bonus": """
-🎁 <b>Daily bonus!</b>
-
-You received <b>{coins}</b> coins!
-🔥 Daily streak: {streak} days
-
-Come back tomorrow! 🎉
-""",
-        "daily_already": "❌ You already claimed today's bonus!\n\nNext bonus: {next_time}",
-        "achievement_unlocked": """
-🏅 <b>NEW ACHIEVEMENT!</b>
-
-{name}
-
-💰 +{coins} coins
-""",
+        "opponent_surrendered": "🎉 Opponent surrendered! Victory!",
         "game_not_found": "❌ Game not found!",
-        "already_in_game": "❌ You're already in a game!",
-        "cannot_play_self": "❌ You can't play with yourself!",
-        "game_already_started": "❌ This game has already started!",
+        "already_in_game": "❌ Already in game!",
+        "leaderboard": "🏆 <b>TOP PLAYERS</b>\n\n{players}\n\nYour rank: <b>#{rank}</b>",
+        "profile": "👤 <b>{name}</b>\n\n🆔 ID: <code>{user_id}</code>\n🏆 Rating: {rating} (#{rank})\n💰 Coins: {coins}\n🔥 Streak: {streak}\n\n📊 Games: {games}\n🏆 Wins: {wins}\n📈 %: {win_rate:.1f}%\n\n🏅 Achievements: {achievement_count}/{total_achievements}",
+        "daily_bonus": "🎁 <b>Daily bonus!</b>\n\nYou got <b>{coins}</b> coins!\n🔥 Streak: {streak} days",
+        "daily_already": "❌ Already claimed!\n\nNext: {next_time}",
         
-        # Buttons
         "btn_new_game": "🎮 New Game",
         "btn_vs_bot": "🤖 vs Bot",
         "btn_vs_player": "👥 vs Friend",
         "btn_leaderboard": "🏆 Leaderboard",
         "btn_profile": "👤 Profile",
-        "btn_stats": "📊 Statistics",
-        "btn_daily": "🎁 Daily Bonus",
+        "btn_daily": "🎁 Bonus",
         "btn_settings": "⚙️ Settings",
-        "btn_hint": "💡 Hint ({cost} coins)",
         "btn_surrender": "🏳️ Surrender",
         "btn_back": "🔙 Back",
         "btn_yes": "✅ Yes",
         "btn_no": "❌ No",
-        "btn_subscribe": "📢 Go to channel",
+        "btn_subscribe": "📢 Go",
         "btn_check": "✅ Check",
         "btn_easy": "🟢 Easy (3)",
         "btn_medium": "🟡 Medium (4)",
         "btn_hard": "🔴 Hard (5)",
         "btn_extreme": "⚫ Extreme (6)",
     },
-    "kk": {
-        "choose_language": "🌍 Tildi saylań:",
-        "subscribe": "📢 Kanalǵa jazılıń:",
-        "not_subscribed": "❌ Siz áli jazılmadıńız!",
-        "subscribed": "✅ Qutlıqlaymız! Endi bottan paydala alasız.",
-        "main_menu": """
-🏠 <b>Bas menyu</b>
-
-👤 {name}
-💰 Coins: <b>{coins}</b>
-🏆 Rating: <b>{rating}</b>
-🔥 Seriya: <b>{streak}</b>
-📊 Oyınlar: <b>{wins}/{games}</b> ({win_rate:.1f}%)
-""",
-        "btn_new_game": "🎮 Jańa oyın",
-        "btn_vs_bot": "🤖 Bot penen",
-        "btn_vs_player": "👥 Dos penen",
-        "btn_leaderboard": "🏆 Reytinglar",
-        "btn_profile": "👤 Profil",
-        "btn_stats": "📊 Statistika",
-        "btn_daily": "🎁 Kúnlik bonus",
-        "btn_settings": "⚙️ Sazlamalar",
-        "btn_hint": "💡 Kómek ({cost} coin)",
-        "btn_surrender": "🏳️ Taslim",
-        "btn_back": "🔙 Artqa",
-        "btn_yes": "✅ Awa",
-        "btn_no": "❌ Yaq",
-        "btn_subscribe": "📢 Kanalǵa ótiw",
-        "btn_check": "✅ Tekserip kóriw",
-        "btn_easy": "🟢 Jeńil (3)",
-        "btn_medium": "🟡 Ortasha (4)",
-        "btn_hard": "🔴 Qıyın (5)",
-        "btn_extreme": "⚫ Ekstrim (6)",
-    }
+    "kk": MESSAGES.get("uz", {})  # Fallback to Uzbek
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -624,28 +256,61 @@ Come back tomorrow! 🎉
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class Database:
-    """MongoDB database manager."""
+    """MongoDB database with error handling."""
     
     def __init__(self):
         self.client: Optional[AsyncIOMotorClient] = None
         self.db = None
+        self.connected = False
         
     async def connect(self):
-        """Connect to MongoDB."""
-        try:
-            self.client = AsyncIOMotorClient(MONGODB_URI)
-            self.db = self.client[DB_NAME]
-            
-            self.players = self.db.players
-            self.games = self.db.games
-            
-            await self.create_indexes()
-            await self.client.admin.command('ping')
-            
-            logger.info("✅ MongoDB connected!")
-        except Exception as e:
-            logger.error(f"❌ MongoDB error: {e}")
-            raise
+        """Connect to MongoDB with retry logic."""
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"📡 Connecting to MongoDB (attempt {attempt + 1}/{max_retries})...")
+                
+                self.client = AsyncIOMotorClient(
+                    MONGODB_URI,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=10000,
+                    socketTimeoutMS=10000,
+                )
+                
+                self.db = self.client[DB_NAME]
+                self.players = self.db.players
+                self.games = self.db.games
+                
+                # Test connection
+                await self.client.admin.command('ping')
+                
+                # Create indexes
+                await self.create_indexes()
+                
+                self.connected = True
+                logger.info("✅ MongoDB connected successfully!")
+                return
+                
+            except Exception as e:
+                logger.error(f"❌ MongoDB connection error (attempt {attempt + 1}): {e}")
+                
+                if attempt < max_retries - 1:
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.warning("⚠️ MongoDB unavailable. Using in-memory storage.")
+                    self.connected = False
+                    # Initialize in-memory fallback
+                    self._init_memory_storage()
+    
+    def _init_memory_storage(self):
+        """Initialize in-memory storage as fallback."""
+        self.memory_players = {}
+        self.memory_games = {}
+        logger.info("💾 In-memory storage initialized")
     
     async def disconnect(self):
         """Disconnect from MongoDB."""
@@ -655,14 +320,23 @@ class Database:
     
     async def create_indexes(self):
         """Create indexes."""
-        await self.players.create_index("user_id", unique=True)
-        await self.players.create_index([("rating", -1)])
-        await self.games.create_index("game_id", unique=True)
-        await self.games.create_index([("is_finished", 1)])
+        try:
+            await self.players.create_index("user_id", unique=True)
+            await self.players.create_index([("rating", -1)])
+            await self.games.create_index("game_id", unique=True)
+            await self.games.create_index([("is_finished", 1)])
+            logger.info("✅ Indexes created")
+        except Exception as e:
+            logger.warning(f"⚠️ Index creation warning: {e}")
     
-    # Players
+    # Players (with fallback)
     async def get_player(self, user_id: int) -> Optional[Dict]:
-        return await self.players.find_one({"user_id": user_id})
+        if not self.connected:
+            return self.memory_players.get(user_id)
+        try:
+            return await self.players.find_one({"user_id": user_id})
+        except:
+            return self.memory_players.get(user_id)
     
     async def create_player(self, user_id: int, username: str = "", first_name: str = "", language: str = "uz") -> Dict:
         player = {
@@ -677,74 +351,200 @@ class Database:
             "current_streak": 0,
             "best_streak": 0,
             "total_attempts": 0,
-            "hints_used": 0,
             "achievements": [],
             "last_daily": None,
             "created_at": datetime.utcnow()
         }
-        await self.players.insert_one(player)
+        
+        if not self.connected:
+            self.memory_players[user_id] = player
+        else:
+            try:
+                await self.players.insert_one(player)
+            except:
+                self.memory_players[user_id] = player
+        
         return player
     
     async def update_player(self, user_id: int, data: Dict) -> bool:
-        result = await self.players.update_one({"user_id": user_id}, {"$set": data})
-        return result.modified_count > 0
+        if not self.connected:
+            if user_id in self.memory_players:
+                self.memory_players[user_id].update(data)
+                return True
+            return False
+        
+        try:
+            result = await self.players.update_one({"user_id": user_id}, {"$set": data})
+            return result.modified_count > 0
+        except:
+            if user_id in self.memory_players:
+                self.memory_players[user_id].update(data)
+                return True
+            return False
     
     async def increment_stats(self, user_id: int, increments: Dict) -> bool:
-        result = await self.players.update_one({"user_id": user_id}, {"$inc": increments})
-        return result.modified_count > 0
+        if not self.connected:
+            if user_id in self.memory_players:
+                for key, val in increments.items():
+                    self.memory_players[user_id][key] = self.memory_players[user_id].get(key, 0) + val
+                return True
+            return False
+        
+        try:
+            result = await self.players.update_one({"user_id": user_id}, {"$inc": increments})
+            return result.modified_count > 0
+        except:
+            if user_id in self.memory_players:
+                for key, val in increments.items():
+                    self.memory_players[user_id][key] = self.memory_players[user_id].get(key, 0) + val
+                return True
+            return False
     
     async def add_achievement(self, user_id: int, achievement: str) -> bool:
-        result = await self.players.update_one(
-            {"user_id": user_id},
-            {"$addToSet": {"achievements": achievement}}
-        )
-        return result.modified_count > 0
+        if not self.connected:
+            if user_id in self.memory_players:
+                if achievement not in self.memory_players[user_id]["achievements"]:
+                    self.memory_players[user_id]["achievements"].append(achievement)
+                return True
+            return False
+        
+        try:
+            result = await self.players.update_one(
+                {"user_id": user_id},
+                {"$addToSet": {"achievements": achievement}}
+            )
+            return result.modified_count > 0
+        except:
+            if user_id in self.memory_players:
+                if achievement not in self.memory_players[user_id]["achievements"]:
+                    self.memory_players[user_id]["achievements"].append(achievement)
+                return True
+            return False
     
     async def get_leaderboard(self, limit: int = 10) -> List[Dict]:
-        cursor = self.players.find().sort("rating", -1).limit(limit)
-        return await cursor.to_list(length=limit)
+        if not self.connected:
+            sorted_players = sorted(
+                self.memory_players.values(),
+                key=lambda p: p.get("rating", 0),
+                reverse=True
+            )
+            return sorted_players[:limit]
+        
+        try:
+            cursor = self.players.find().sort("rating", -1).limit(limit)
+            return await cursor.to_list(length=limit)
+        except:
+            sorted_players = sorted(
+                self.memory_players.values(),
+                key=lambda p: p.get("rating", 0),
+                reverse=True
+            )
+            return sorted_players[:limit]
     
     async def get_rank(self, user_id: int) -> int:
         player = await self.get_player(user_id)
         if not player:
             return 0
-        count = await self.players.count_documents({"rating": {"$gt": player["rating"]}})
-        return count + 1
+        
+        if not self.connected:
+            count = sum(1 for p in self.memory_players.values() if p.get("rating", 0) > player.get("rating", 0))
+            return count + 1
+        
+        try:
+            count = await self.players.count_documents({"rating": {"$gt": player["rating"]}})
+            return count + 1
+        except:
+            count = sum(1 for p in self.memory_players.values() if p.get("rating", 0) > player.get("rating", 0))
+            return count + 1
     
     # Games
     async def create_game(self, game_data: Dict) -> str:
         game_data["created_at"] = datetime.utcnow()
-        await self.games.insert_one(game_data)
+        
+        if not self.connected:
+            self.memory_games[game_data["game_id"]] = game_data
+        else:
+            try:
+                await self.games.insert_one(game_data)
+            except:
+                self.memory_games[game_data["game_id"]] = game_data
+        
         return game_data["game_id"]
     
     async def get_game(self, game_id: str) -> Optional[Dict]:
-        return await self.games.find_one({"game_id": game_id})
+        if not self.connected:
+            return self.memory_games.get(game_id)
+        
+        try:
+            return await self.games.find_one({"game_id": game_id})
+        except:
+            return self.memory_games.get(game_id)
     
     async def get_active_game(self, user_id: int) -> Optional[Dict]:
-        return await self.games.find_one({
-            "$or": [{"player1_id": user_id}, {"player2_id": user_id}],
-            "is_finished": False
-        })
+        if not self.connected:
+            for game in self.memory_games.values():
+                if not game.get("is_finished", False):
+                    if game.get("player1_id") == user_id or game.get("player2_id") == user_id:
+                        return game
+            return None
+        
+        try:
+            return await self.games.find_one({
+                "$or": [{"player1_id": user_id}, {"player2_id": user_id}],
+                "is_finished": False
+            })
+        except:
+            for game in self.memory_games.values():
+                if not game.get("is_finished", False):
+                    if game.get("player1_id") == user_id or game.get("player2_id") == user_id:
+                        return game
+            return None
     
     async def update_game(self, game_id: str, data: Dict) -> bool:
-        result = await self.games.update_one({"game_id": game_id}, {"$set": data})
-        return result.modified_count > 0
+        if not self.connected:
+            if game_id in self.memory_games:
+                self.memory_games[game_id].update(data)
+                return True
+            return False
+        
+        try:
+            result = await self.games.update_one({"game_id": game_id}, {"$set": data})
+            return result.modified_count > 0
+        except:
+            if game_id in self.memory_games:
+                self.memory_games[game_id].update(data)
+                return True
+            return False
     
     async def add_move(self, game_id: str, move: Dict) -> bool:
-        result = await self.games.update_one(
-            {"game_id": game_id},
-            {"$push": {"history": move}}
-        )
-        return result.modified_count > 0
+        if not self.connected:
+            if game_id in self.memory_games:
+                if "history" not in self.memory_games[game_id]:
+                    self.memory_games[game_id]["history"] = []
+                self.memory_games[game_id]["history"].append(move)
+                return True
+            return False
+        
+        try:
+            result = await self.games.update_one(
+                {"game_id": game_id},
+                {"$push": {"history": move}}
+            )
+            return result.modified_count > 0
+        except:
+            if game_id in self.memory_games:
+                if "history" not in self.memory_games[game_id]:
+                    self.memory_games[game_id]["history"] = []
+                self.memory_games[game_id]["history"].append(move)
+                return True
+            return False
 
 db = Database()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
-
 def get_text(lang: str, key: str, **kwargs) -> str:
-    """Get translated text."""
     text = MESSAGES.get(lang, MESSAGES["uz"]).get(key, key)
     if kwargs:
         try:
@@ -754,12 +554,9 @@ def get_text(lang: str, key: str, **kwargs) -> str:
     return text
 
 def get_button_text(lang: str, key: str, **kwargs) -> str:
-    """Get button text."""
-    btn_key = f"btn_{key}"
-    return get_text(lang, btn_key, **kwargs)
+    return get_text(lang, f"btn_{key}", **kwargs)
 
 def generate_secret(length: int) -> str:
-    """Generate secret number."""
     digits = list("0123456789")
     random.shuffle(digits)
     if digits[0] == "0":
@@ -770,19 +567,16 @@ def generate_secret(length: int) -> str:
     return "".join(digits[:length])
 
 def validate_number(text: str, length: int) -> bool:
-    """Validate number."""
     if len(text) != length or not text.isdigit():
         return False
     return len(set(text)) == length and text[0] != "0"
 
 def calculate_bulls_cows(secret: str, guess: str) -> Tuple[int, int]:
-    """Calculate bulls and cows."""
     bulls = sum(s == g for s, g in zip(secret, guess))
     cows = sum(min(secret.count(d), guess.count(d)) for d in set(guess)) - bulls
     return bulls, cows
 
 def calculate_rating_change(winner_rating: int, loser_rating: int) -> int:
-    """Calculate ELO rating change."""
     expected = 1 / (1 + 10 ** ((loser_rating - winner_rating) / 400))
     return max(10, int(32 * (1 - expected)))
 
@@ -795,42 +589,25 @@ def get_max_hints(difficulty: int) -> int:
     """Get max hints."""
     return difficulty - 1
 
+
 def check_achievements(player: Dict, game: Dict, attempts: int) -> List[str]:
-    """Check for new achievements."""
     new_achievements = []
     current = set(player.get("achievements", []))
     
-    # First win
     if "first_win" not in current and player["games_won"] == 0:
         new_achievements.append("first_win")
     
-    # Speed (3 attempts or less)
     if "speed_3" not in current and attempts <= 3:
         new_achievements.append("speed_3")
     
-    # Streak
     if "streak_3" not in current and player["current_streak"] + 1 >= 3:
         new_achievements.append("streak_3")
+    
     if "streak_5" not in current and player["current_streak"] + 1 >= 5:
         new_achievements.append("streak_5")
-    if "streak_10" not in current and player["current_streak"] + 1 >= 10:
-        new_achievements.append("streak_10")
     
-    # Bot killer
-    if "bot_killer" not in current and game["mode"] == GameMode.VS_BOT.value:
+    if "bot_killer" not in current and game.get("mode") == GameMode.VS_BOT.value:
         new_achievements.append("bot_killer")
-    
-    # Hard mode
-    if "hard_mode" not in current and game["difficulty"] >= 5:
-        new_achievements.append("hard_mode")
-    
-    # 100 games
-    if "games_100" not in current and player["games_played"] + 1 >= 100:
-        new_achievements.append("games_100")
-    
-    # Master (2000+ rating)
-    if "master" not in current and player["rating"] >= 2000:
-        new_achievements.append("master")
     
     return new_achievements
 
@@ -839,15 +616,11 @@ def check_achievements(player: Dict, game: Dict, attempts: int) -> List[str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class AIPlayer:
-    """Simple AI player."""
-    
     def __init__(self, difficulty: int):
         self.difficulty = difficulty
         self.possible = self._generate_all()
-        self.guesses = []
     
     def _generate_all(self) -> List[str]:
-        """Generate all possible numbers."""
         from itertools import permutations
         all_nums = []
         for perm in permutations("0123456789", self.difficulty):
@@ -856,16 +629,11 @@ class AIPlayer:
         return all_nums
     
     def make_guess(self) -> str:
-        """Make a guess."""
         if self.possible:
-            guess = random.choice(self.possible)
-        else:
-            guess = generate_secret(self.difficulty)
-        self.guesses.append(guess)
-        return guess
+            return random.choice(self.possible)
+        return generate_secret(self.difficulty)
     
     def update(self, guess: str, bulls: int, cows: int):
-        """Update possibilities."""
         self.possible = [
             num for num in self.possible
             if calculate_bulls_cows(num, guess) == (bulls, cows)
@@ -874,7 +642,6 @@ class AIPlayer:
 # ═══════════════════════════════════════════════════════════════════════════════
 # KEYBOARDS
 # ═══════════════════════════════════════════════════════════════════════════════
-
 def get_language_keyboard() -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(text=name, callback_data=f"lang_{code}")]
                for code, name in LANGUAGES.items()]
@@ -895,9 +662,8 @@ def get_main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text=get_button_text(lang, "daily"), callback_data="daily"),
-            InlineKeyboardButton(text=get_button_text(lang, "stats"), callback_data="stats")
-        ],
-        [InlineKeyboardButton(text=get_button_text(lang, "settings"), callback_data="settings")]
+            InlineKeyboardButton(text=get_button_text(lang, "settings"), callback_data="settings")
+        ]
     ])
 
 def get_mode_keyboard(lang: str) -> InlineKeyboardMarkup:
@@ -916,15 +682,10 @@ def get_difficulty_keyboard(lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=get_button_text(lang, "back"), callback_data="back_mode")]
     ])
 
-def get_game_keyboard(lang: str, hints_left: int, hint_cost: int) -> InlineKeyboardMarkup:
-    buttons = []
-    if hints_left > 0:
-        buttons.append([InlineKeyboardButton(
-            text=get_button_text(lang, "hint", cost=hint_cost),
-            callback_data="use_hint"
-        )])
-    buttons.append([InlineKeyboardButton(text=get_button_text(lang, "surrender"), callback_data="surrender")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def get_game_keyboard(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=get_button_text(lang, "surrender"), callback_data="surrender")]
+    ])
 
 def get_confirm_keyboard(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -964,16 +725,13 @@ router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    """Start command."""
     user_id = message.from_user.id
     player = await db.get_player(user_id)
     
-    # Check for invite
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("invite_"):
         await state.update_data(pending_invite=args[1])
     
-    # New user
     if not player:
         await state.set_state(GameStates.choosing_language)
         await message.answer(
@@ -982,10 +740,8 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         return
     
-    # Existing user
     lang = player["language"]
     
-    # Check subscription
     try:
         member = await message.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if member.status not in ["member", "creator", "administrator", "restricted"]:
@@ -997,21 +753,12 @@ async def cmd_start(message: Message, state: FSMContext):
     except:
         pass
     
-    # Check active game
-    active_game = await db.get_active_game(user_id)
-    if active_game:
-        await message.answer(
-            get_text(lang, "surrender_confirm"),
-            reply_markup=get_confirm_keyboard(lang)
-        )
-        return
-    
-    # Show main menu
     await show_main_menu(message, player)
+
+
 
 @router.callback_query(F.data.startswith("lang_"))
 async def select_language(callback: CallbackQuery, state: FSMContext):
-    """Select language."""
     lang_code = callback.data.split("_")[1]
     user = callback.from_user
     
@@ -1020,7 +767,6 @@ async def select_language(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(GameStates.main_menu)
     
-    # Check subscription
     await callback.message.edit_text(
         get_text(lang_code, "subscribe"),
         reply_markup=get_subscribe_keyboard(lang_code)
@@ -1055,7 +801,6 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext):
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def show_main_menu(message: Message, player: Dict, edit: bool = False):
-    """Show main menu."""
     lang = player["language"]
     
     text = get_text(
@@ -1819,25 +1564,27 @@ async def show_settings(callback: CallbackQuery):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def on_startup(bot: Bot):
-    """Startup."""
     await db.connect()
     logger.info("🚀 Bot started!")
 
 async def on_shutdown(bot: Bot):
-    """Shutdown."""
     await db.disconnect()
     logger.info("👋 Bot stopped!")
 
 async def main():
-    """Main function."""
-    bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-    dp = Dispatcher(storage=MemoryStorage())
+    # Fixed: Use DefaultBotProperties instead of parse_mode parameter
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     
+    dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     
+    logger.info("🎮 Starting bot polling...")
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
@@ -1845,3 +1592,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped (Ctrl+C)")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
