@@ -247,9 +247,9 @@ MESSAGES = {
         "btn_medium": "🟡 Medium (4)",
         "btn_hard": "🔴 Hard (5)",
         "btn_extreme": "⚫ Extreme (6)",
-    },
-    "kk": MESSAGES.get("uz", {})  # Fallback to Uzbek
+    }, # Fallback to Uzbek
 }
+MESSAGES["kk"] = MESSAGES["uz"].copy()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATABASE
